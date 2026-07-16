@@ -72,6 +72,13 @@ function wrapCard(key, headExtra, bodyHtml, opts = {}) {
       </div></div>
     <div class="pbody"${opts.flush ? ' style="padding:0"' : ""}>${bodyHtml}</div></div>`;
 }
+function fitReport() {
+  const rs = document.querySelector(".report-split");
+  if (!rs) return;
+  const top = rs.getBoundingClientRect().top;   // viewport-relative
+  rs.style.height = Math.max(340, window.innerHeight - top - 14) + "px";
+  const nv = window.__nv; if (nv) { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }
+}
 function initSplitter() {
   const sp = document.getElementById("splitter");
   const side = document.getElementById("repSide");
@@ -121,6 +128,7 @@ async function route() {
   try { await page.fn(arg); } catch (e) { $("#content").innerHTML = `<div class="empty"><div class="big">⚠</div>${esc(e.message)}</div>`; }
 }
 window.addEventListener("hashchange", route);
+window.addEventListener("resize", () => { if (document.querySelector(".report-split")) fitReport(); });
 
 /* ---------------------------------------------------------------- overview */
 async function renderOverview() {
@@ -404,6 +412,9 @@ async function renderRunDetail(id) {
     saveShown(); saveCollapsed(); try { localStorage.removeItem("mlab_sidew"); } catch { } renderRunDetail(id);
   };
   initSplitter();
+  const main = document.querySelector(".main"); if (main) main.scrollTop = 0;
+  fitReport();
+  setTimeout(fitReport, 80);
   $("#expBtn").onclick = () => exportReport(r);
   $("#cmpBtn").onclick = async () => {
     const runs = await api("/runs?dataset_id=" + r.dataset_id);

@@ -46,7 +46,7 @@ button{font-family:inherit}
   padding:16px 26px;background:rgba(13,17,23,.82);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
 .topbar h2{margin:0;font-size:19px;font-weight:650;letter-spacing:.2px}
 .topbar .sub{color:var(--muted);font-size:12.5px;margin-top:2px}
-.content{padding:22px 26px 60px}
+.content{padding:22px 26px 20px}
 
 /* buttons */
 .btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border2);background:var(--panel2);
@@ -144,7 +144,7 @@ table.tbl{width:100%;border-collapse:collapse}
 @media(max-width:1050px){.rd{grid-template-columns:1fr}}
 .viewer{background:#05070a;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative}
 .viewer.vmax{position:fixed;inset:0;z-index:70;border-radius:0}
-.vwrap{display:flex;height:462px}
+.vwrap{display:flex;height:100%;min-height:340px}
 .viewer.vmax .vwrap{height:100vh}
 .vrail{flex:0 0 48px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;
   align-items:center;gap:6px;padding:9px 0;overflow-y:auto}
@@ -216,12 +216,15 @@ input[type=range]{accent-color:var(--accent)}
   padding:4px 11px;font-size:12px;font-weight:600;cursor:pointer}
 .pchip:hover{border-color:#48566a;color:var(--text)}
 .pchip.on{background:#12203a;border-color:#25406e;color:var(--accent)}
-.report-split{display:flex;align-items:stretch}
-.report-left{flex:1;min-width:240px;display:flex;flex-direction:column;gap:14px}
+.report-split{display:flex;align-items:stretch;overflow:hidden}
+.report-left{flex:1;min-width:240px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+.report-left>.rpanel{flex:1;min-height:0;display:flex;flex-direction:column}
+.report-left>.rpanel>.pbody{flex:1;min-height:0;display:flex}
+.report-left .viewer{flex:1;min-height:0}
 .splitter{flex:0 0 12px;cursor:col-resize;position:relative;align-self:stretch}
 .splitter::before{content:"";position:absolute;left:5px;top:0;bottom:0;width:2px;background:var(--border);border-radius:2px;transition:.12s}
 .splitter:hover::before{background:var(--accent);width:3px;left:4px}
-.report-side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.report-side{display:flex;flex-direction:column;gap:14px;min-width:0;overflow-y:auto;overflow-x:hidden;padding-right:4px}
 .panel.collapsed .pbody{display:none}
 .pctl{display:flex;align-items:center;gap:6px}
 .pico{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:1px solid transparent;
