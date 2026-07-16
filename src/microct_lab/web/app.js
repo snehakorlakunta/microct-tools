@@ -420,36 +420,37 @@ async function mountViewer(id) {
       Vendor NiiVue into <span class="mono">web/vendor/niivue.js</span> for offline use.</div></div>`;
     return;
   }
-  box.innerHTML = `<canvas id="gl"></canvas>
-    <div class="vctrl">
-      <div class="vmodes" id="vmodes">
-        <button class="btn sm" data-m="mpr">MPR</button>
-        <button class="btn sm" data-m="ax">Axial</button>
-        <button class="btn sm" data-m="cor">Coronal</button>
-        <button class="btn sm" data-m="sag">Sagittal</button>
-        <button class="btn sm" data-m="3d">3D</button>
+  box.innerHTML = `<div class="vwrap">
+    <div class="vrail">
+      <button class="vbtn" data-m="mpr" title="Multiplanar (MPR)">▦</button>
+      <button class="vbtn" data-m="ax" title="Axial">A</button>
+      <button class="vbtn" data-m="cor" title="Coronal">C</button>
+      <button class="vbtn" data-m="sag" title="Sagittal">S</button>
+      <button class="vbtn" data-m="3d" title="3D render">⬡</button>
+      <div class="vsep"></div>
+      <div class="vopac" title="Mask opacity"><input type="range" id="op" min="0" max="1" step="0.05" value="0.5"><span>α</span></div>
+      <div class="vrot" id="vrot" style="display:none">
+        <button class="vbtn xs" data-r="u" title="rotate up">▲</button>
+        <div><button class="vbtn xs" data-r="l" title="rotate left">◄</button><button class="vbtn xs" data-r="r" title="rotate right">►</button></div>
+        <button class="vbtn xs" data-r="d" title="rotate down">▼</button>
       </div>
-      <label>Opacity <input type="range" id="op" min="0" max="1" step="0.05" value="0.5" style="width:88px"></label>
-      <span class="vrot" id="vrot" style="display:none">
-        <button class="btn sm" data-r="l" title="rotate left">◄</button>
-        <button class="btn sm" data-r="r" title="rotate right">►</button>
-        <button class="btn sm" data-r="u" title="rotate up">▲</button>
-        <button class="btn sm" data-r="d" title="rotate down">▼</button>
-      </span>
-      <div class="grow"></div>
-      <span class="muted" style="font-size:11px">scroll = slices · drag = rotate (3D) · F = fullscreen</span>
-      <button class="btn sm" id="vreset" title="reset view">⟲ Reset</button>
-      <button class="btn sm" id="vmax" title="maximize (F)">⤢ Maximize</button>
-      <a class="btn sm ghost" href="/api/runs/${id}/mask.nii.gz" download>⭳ mask</a>
+      <div class="vsep"></div>
+      <button class="vbtn" id="vreset" title="Reset view">⟲</button>
+      <button class="vbtn" id="vmax" title="Maximize (F)">⤢</button>
+      <a class="vbtn" href="/api/runs/${id}/mask.nii.gz" download title="Download full-res mask">⭳</a>
     </div>
-    <div class="vctrl cine" id="cinebar" style="display:none">
-      <button class="btn sm" id="cinePrev" title="previous slice (←)">⏮</button>
-      <button class="btn sm primary" id="cinePlay" title="play/pause (space)">▶ Play</button>
-      <button class="btn sm" id="cineNext" title="next slice (→)">⏭</button>
-      <input type="range" id="cineSlider" min="0" max="0" value="0" style="flex:1;min-width:120px">
-      <span class="muted mono" id="cineLabel" style="min-width:64px;text-align:right">–</span>
-      <label class="muted" style="font-size:11px">fps <select id="cineFps" class="input" style="padding:3px 6px"><option>6</option><option selected>12</option><option>20</option><option>30</option></select></label>
-    </div>`;
+    <div class="vstage">
+      <canvas id="gl"></canvas>
+      <div class="cine" id="cinebar" style="display:none">
+        <button class="btn sm" id="cinePrev" title="previous slice (←)">⏮</button>
+        <button class="btn sm primary" id="cinePlay" title="play/pause (space)">▶</button>
+        <button class="btn sm" id="cineNext" title="next slice (→)">⏭</button>
+        <input type="range" id="cineSlider" min="0" max="0" value="0">
+        <span class="muted mono" id="cineLabel">–</span>
+        <label class="muted" style="font-size:11px">fps <select id="cineFps" class="input"><option>6</option><option selected>12</option><option>20</option><option>30</option></select></label>
+      </div>
+    </div>
+  </div>`;
   try {
     const nv = new mod.Niivue({ backColor: [0.02, 0.03, 0.05, 1], show3Dcrosshair: true, crosshairColor: [1, 0.6, 0, 0.6] });
     nv.attachTo("gl");
@@ -459,6 +460,7 @@ async function mountViewer(id) {
       { url: `/api/runs/${id}/view_mask.nii.gz`, colormap: "red", opacity: 0.5, cal_min: 0.5, cal_max: 1 },
     ]);
     window.__nv = nv;
+    setTimeout(() => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }, 60);
     const SL = { mpr: nv.sliceTypeMultiplanar, ax: nv.sliceTypeAxial, cor: nv.sliceTypeCoronal, sag: nv.sliceTypeSagittal, "3d": nv.sliceTypeRender };
     let az = 180, el = 15, cur = "mpr", idx = 0;
     const stopCine = () => {
@@ -496,11 +498,11 @@ async function mountViewer(id) {
     const setMode = (m) => {
       cur = m; stopCine();
       try { nv.setSliceType(SL[m]); } catch { }
-      box.querySelectorAll("#vmodes .btn").forEach(b => b.classList.toggle("primary", b.dataset.m === m));
-      const rot = box.querySelector("#vrot"); if (rot) rot.style.display = m === "3d" ? "inline-flex" : "none";
+      box.querySelectorAll(".vrail [data-m]").forEach(b => b.classList.toggle("active", b.dataset.m === m));
+      const rot = box.querySelector("#vrot"); if (rot) rot.style.display = m === "3d" ? "flex" : "none";
       updateCine(m);
     };
-    box.querySelectorAll("#vmodes .btn").forEach(b => b.onclick = () => setMode(b.dataset.m));
+    box.querySelectorAll(".vrail [data-m]").forEach(b => b.onclick = () => setMode(b.dataset.m));
     box.querySelector("#op").oninput = e => { try { nv.setOpacity(1, +e.target.value); } catch { } };
     box.querySelectorAll("#vrot [data-r]").forEach(b => b.onclick = () => {
       const d = b.dataset.r;
@@ -523,7 +525,8 @@ async function mountViewer(id) {
     };
     const toggleMax = () => {
       const on = box.classList.toggle("vmax");
-      box.querySelector("#vmax").innerHTML = on ? "⤡ Restore" : "⤢ Maximize";
+      box.querySelector("#vmax").innerHTML = on ? "⤡" : "⤢";
+      box.querySelector("#vmax").title = on ? "Restore (Esc)" : "Maximize (F)";
       document.body.style.overflow = on ? "hidden" : "";
       setTimeout(() => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }, 60);
     };
