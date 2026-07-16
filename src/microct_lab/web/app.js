@@ -114,6 +114,7 @@ const PAGES = {
   insights: { title: "QC & Insights", sub: "Failure modes and review status", fn: renderInsights },
   run: { title: "Run", sub: "", fn: renderRunDetail },
   compare: { title: "Compare runs", sub: "Side-by-side results", fn: renderCompare },
+  dataset: { title: "Dataset", sub: "", fn: renderDatasetView },
 };
 function parseHash() { const raw = (location.hash || "#/overview").replace(/^#\//, ""); const [view, arg] = raw.split("/"); return { view: view || "overview", arg }; }
 async function route() {
@@ -243,6 +244,7 @@ async function openDataset(id) {
     ${runsTbl}
   `, [
     { label: "New run on this dataset", cls: "primary", fn: () => { closeModal(); openNewRun([id]); } },
+    { label: "Visualize dataset", fn: () => { closeModal(); location.hash = "#/dataset/" + id; } },
     { label: "Compare runs", fn: () => { if (runs.length < 2) return toast("Need ≥2 runs to compare", "err"); closeModal(); location.hash = "#/compare/" + runs.map(x => x.id).join(","); } },
     { label: "Save", fn: async () => {
         await api("/datasets/" + id, { method: "PATCH", body: JSON.stringify({
@@ -413,7 +415,10 @@ async function renderRunDetail(id) {
     if (viewerMounted) { if (window.__nv) { try { window.__nv.resizeListener(); } catch { } } return; }
     if (!panelShown.has("viewer")) return;
     viewerMounted = true;
-    if (r.status === "succeeded") mountViewer(id);
+    if (r.status === "succeeded") mountViewer([
+      { url: `/api/runs/${id}/view_input.nii.gz` },
+      { url: `/api/runs/${id}/view_mask.nii.gz`, colormap: "red", opacity: 0.5, cal_min: 0.5, cal_max: 1 },
+    ], { hasMask: true, previewUrl: `/api/runs/${id}/preview.png`, downloadUrl: `/api/runs/${id}/mask.nii.gz` });
     else if (r.status === "running" || r.status === "queued") {
       $("#viewer").innerHTML = `<div class="vfallback"><span class="spin"></span> ${r.status}… the viewer appears when the mask is ready.</div>`;
       pollTimer = setInterval(async () => {
@@ -524,13 +529,37 @@ async function loadNiivue() {
   }
   return null;
 }
-async function mountViewer(id) {
+async function renderDatasetView(id) {
+  const d = await api("/datasets/" + id);
+  $("#pageTitle").textContent = d.name;
+  $("#pageSub").textContent = `${d.study || ""} · ${vox(d.voxel_size_um)} · ${d.width || "?"}×${d.height || "?"}×${d.slices || "?"} · raw scan`;
+  $("#pageActions").innerHTML = `<button class="btn" id="dvRun">Run segmentation</button><a class="btn ghost" href="#/datasets">← Datasets</a>`;
+  $("#content").innerHTML =
+    `<div class="report-split">
+       <div class="report-left" id="repLeft">
+         <div class="panel rpanel" data-panel="viewer">
+           <div class="phead"><h3>Dataset viewer — raw scan (no segmentation)</h3></div>
+           <div class="pbody" style="padding:0">
+             <div class="viewer" id="viewer"><div class="vfallback"><span class="spin"></span> building a viewable volume from the slice stack… (first time can take a few seconds)</div></div>
+           </div>
+         </div>
+       </div>
+     </div>`;
+  $("#dvRun").onclick = () => openNewRun([id]);
+  const main = document.querySelector(".main"); if (main) main.scrollTop = 0;
+  fitReport(); setTimeout(fitReport, 80);
+  mountViewer([{ url: `/api/datasets/${id}/view_volume.nii.gz` }],
+    { hasMask: false, previewUrl: `/api/datasets/${id}/thumbnail` });
+}
+
+async function mountViewer(volumes, opts = {}) {
   const box = $("#viewer");
   const mod = await loadNiivue();
-  if (!mod) { // graceful fallback: preview PNG
-    box.innerHTML = `<div class="vfallback"><img src="/api/runs/${id}/preview.png" alt="preview">
-      <div class="muted">Interactive viewer unavailable (NiiVue didn't load). Showing the preview overlay.<br>
-      Vendor NiiVue into <span class="mono">web/vendor/niivue.js</span> for offline use.</div></div>`;
+  const prev = opts.previewUrl;
+  if (!mod) { // graceful fallback
+    box.innerHTML = prev
+      ? `<div class="vfallback"><img src="${prev}" alt="preview"><div class="muted">Interactive viewer unavailable (NiiVue didn't load); showing the preview.</div></div>`
+      : `<div class="vfallback"><div class="muted">Interactive viewer unavailable (NiiVue didn't load).</div></div>`;
     return;
   }
   box.innerHTML = `<div class="vwrap">
@@ -545,7 +574,7 @@ async function mountViewer(id) {
       <button class="vbtn" id="zout" title="Zoom out (− or Ctrl+scroll)">－</button>
       <button class="vbtn" id="pan" title="Pan mode (P) — then drag the image">✋</button>
       <div class="vsep"></div>
-      <div class="vopac" title="Mask opacity"><input type="range" id="op" min="0" max="1" step="0.05" value="0.5"><span>α</span></div>
+      ${opts.hasMask ? `<div class="vopac" title="Mask opacity"><input type="range" id="op" min="0" max="1" step="0.05" value="0.5"><span>α</span></div>` : ""}
       <div class="vrot" id="vrot" style="display:none">
         <button class="vbtn xs" data-r="u" title="rotate up">▲</button>
         <div><button class="vbtn xs" data-r="l" title="rotate left">◄</button><button class="vbtn xs" data-r="r" title="rotate right">►</button></div>
@@ -554,7 +583,7 @@ async function mountViewer(id) {
       <div class="vsep"></div>
       <button class="vbtn" id="vreset" title="Reset view">⟲</button>
       <button class="vbtn" id="vmax" title="Maximize (F)">⤢</button>
-      <a class="vbtn" href="/api/runs/${id}/mask.nii.gz" download title="Download full-res mask">⭳</a>
+      ${opts.downloadUrl ? `<a class="vbtn" href="${opts.downloadUrl}" download title="Download full-res file">⭳</a>` : ""}
     </div>
     <div class="vstage">
       <canvas id="gl"></canvas>
@@ -571,11 +600,8 @@ async function mountViewer(id) {
   try {
     const nv = new mod.Niivue({ backColor: [0.02, 0.03, 0.05, 1], show3Dcrosshair: true, crosshairColor: [1, 0.6, 0, 0.6] });
     nv.attachTo("gl");
-    // Downsampled copies for the viewer — full-res volumes overflow browser WebGL buffers.
-    await nv.loadVolumes([
-      { url: `/api/runs/${id}/view_input.nii.gz` },
-      { url: `/api/runs/${id}/view_mask.nii.gz`, colormap: "red", opacity: 0.5, cal_min: 0.5, cal_max: 1 },
-    ]);
+    // Downsampled volumes (full-res would overflow browser WebGL buffers).
+    await nv.loadVolumes(volumes);
     window.__nv = nv;
     setTimeout(() => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }, 60);
     const SL = { mpr: nv.sliceTypeMultiplanar, ax: nv.sliceTypeAxial, cor: nv.sliceTypeCoronal, sag: nv.sliceTypeSagittal, "3d": nv.sliceTypeRender };
@@ -620,7 +646,7 @@ async function mountViewer(id) {
       updateCine(m);
     };
     box.querySelectorAll(".vrail [data-m]").forEach(b => b.onclick = () => setMode(b.dataset.m));
-    box.querySelector("#op").oninput = e => { try { nv.setOpacity(1, +e.target.value); } catch { } };
+    { const opEl = box.querySelector("#op"); if (opEl) opEl.oninput = e => { try { nv.setOpacity(1, +e.target.value); } catch { } }; }
     box.querySelectorAll("#vrot [data-r]").forEach(b => b.onclick = () => {
       const d = b.dataset.r;
       az += d === "l" ? -20 : d === "r" ? 20 : 0;
@@ -685,7 +711,9 @@ async function mountViewer(id) {
     document.addEventListener("keydown", keyh);
     setMode("mpr");
   } catch (e) {
-    box.innerHTML = `<div class="vfallback"><img src="/api/runs/${id}/preview.png"><div class="muted">Viewer error: ${esc(e.message)}</div></div>`;
+    box.innerHTML = prev
+      ? `<div class="vfallback"><img src="${prev}"><div class="muted">Viewer error: ${esc(e.message)}</div></div>`
+      : `<div class="vfallback"><div class="muted">Viewer error: ${esc(e.message)}</div></div>`;
   }
 }
 

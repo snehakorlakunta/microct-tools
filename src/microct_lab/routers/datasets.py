@@ -1,6 +1,8 @@
 """Dataset catalog endpoints: search / filter / sort, detail, thumbnail, edit."""
 from __future__ import annotations
 
+import glob
+import math
 import os
 from typing import Optional
 
@@ -10,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..database import get_db
 from ..models import Dataset, Run
 from ..schemas import DatasetDetail, DatasetOut
@@ -74,6 +77,43 @@ def thumbnail(dataset_id: int, db: Session = Depends(get_db)):
     if not d or not d.thumbnail or not os.path.exists(d.thumbnail):
         raise HTTPException(404, "no thumbnail")
     return FileResponse(d.thumbnail, media_type="image/png")
+
+
+def _build_dataset_view(d: Dataset) -> Optional[str]:
+    """Build (and cache) a downsampled NIfTI of the raw slice stack for the viewer."""
+    cache = os.path.join(settings.state_dir, "cache")
+    os.makedirs(cache, exist_ok=True)
+    out = os.path.join(cache, f"dataset_{d.id}_view.nii.gz")
+    if os.path.exists(out):
+        return out
+    files = sorted(p for p in glob.glob(os.path.join(d.slices_path, d.pattern))
+                   if "_spr" not in os.path.basename(p).lower()
+                   and "_pp" not in os.path.basename(p).lower())
+    if not files:
+        return None
+    import numpy as np
+    import SimpleITK as sitk
+    from PIL import Image
+    H, W = np.array(Image.open(files[0]).convert("L")).shape
+    f = max(1, math.ceil(max(len(files), H, W) / 512))   # keep max axis <= ~512
+    arr = [np.array(Image.open(fp).convert("L"))[::f, ::f] for fp in files[::f]]
+    vol = np.stack(arr, 0).astype("uint8")
+    img = sitk.GetImageFromArray(vol)
+    sp = ((d.voxel_size_um or 4.0) / 1000.0) * f
+    img.SetSpacing((sp, sp, sp))
+    sitk.WriteImage(img, out, useCompression=True)
+    return out
+
+
+@router.get("/{dataset_id}/view_volume.nii.gz")
+def dataset_view_volume(dataset_id: int, db: Session = Depends(get_db)):
+    d = db.get(Dataset, dataset_id)
+    if not d:
+        raise HTTPException(404, "dataset not found")
+    path = _build_dataset_view(d)
+    if not path:
+        raise HTTPException(404, "no slices to view")
+    return FileResponse(path, media_type="application/gzip", filename=os.path.basename(path))
 
 
 class DatasetPatch(BaseModel):

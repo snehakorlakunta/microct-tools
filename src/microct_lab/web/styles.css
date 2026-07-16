@@ -207,8 +207,9 @@ input[type=range]{accent-color:var(--accent)}
 .navtoggle{width:34px;height:34px;border:1px solid var(--border2);background:var(--panel2);color:var(--text);
   border-radius:9px;cursor:pointer;font-size:15px}
 .navtoggle:hover{background:var(--panel3);border-color:#48566a}
-.app.navhidden{grid-template-columns:0 1fr}
+.app.navhidden{grid-template-columns:1fr}
 .app.navhidden .sidebar{display:none}
+.app.navhidden .main{grid-column:1}
 
 /* configurable report panels */
 .panelbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:14px}
