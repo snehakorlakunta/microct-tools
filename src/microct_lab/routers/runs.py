@@ -211,6 +211,79 @@ def run_view_mask(run_id: int, db: Session = Depends(get_db)):
     return _downsampled(r, r.mask_nii, "mask")
 
 
+def _case_from(run: Run) -> str:
+    """Case name a run's outputs are prefixed with (derived from the mask file)."""
+    if run.mask_nii:
+        b = os.path.basename(run.mask_nii)
+        for ext in (".nii.gz", ".nii"):
+            if b.endswith(ext):
+                return b[: -len(ext)]
+    return "case"
+
+
+def _bmp_dir(run: Run) -> str:
+    base = run.output_dir or (os.path.dirname(run.mask_nii) if run.mask_nii else "")
+    return os.path.join(base, f"{_case_from(run)}_mask_bmp")
+
+
+def _bmp_summary(out_dir: str) -> Optional[dict]:
+    if not out_dir or not os.path.isdir(out_dir):
+        return None
+    files = [f for f in os.listdir(out_dir) if f.lower().endswith(".bmp")]
+    if not files:
+        return None
+    total = 0
+    for f in files:
+        try:
+            total += os.path.getsize(os.path.join(out_dir, f))
+        except OSError:
+            pass
+    return {"count": len(files), "bytes": total, "dir": out_dir}
+
+
+@router.get("/{run_id}/bmp_status")
+def bmp_status(run_id: int, db: Session = Depends(get_db)):
+    """Whether the per-slice mask BMP stack already exists for this run."""
+    r = db.get(Run, run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    out_dir = _bmp_dir(r)
+    summary = _bmp_summary(out_dir)
+    if summary:
+        return {"exists": True, **summary}
+    return {"exists": False, "dir": out_dir,
+            "can_export": bool(r.mask_nii and os.path.exists(r.mask_nii))}
+
+
+@router.post("/{run_id}/export_bmp")
+def export_bmp(run_id: int, force: bool = False, db: Session = Depends(get_db)):
+    """Write (or reuse) the per-slice mask BMP stack for an existing run.
+
+    New runs generate this automatically; this endpoint back-fills older runs
+    (like the seeded R2 result) and lets you regenerate with ?force=true.
+    """
+    from ..bmp_export import export_mask_bmp
+
+    r = db.get(Run, run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    if not r.mask_nii or not os.path.exists(r.mask_nii):
+        raise HTTPException(404, "no mask available for this run")
+    out_dir = _bmp_dir(r)
+    if not force:
+        summary = _bmp_summary(out_dir)
+        if summary:
+            return {"cached": True, **summary}
+    ds = r.dataset
+    info = export_mask_bmp(
+        r.mask_nii, out_dir,
+        ds.slices_path if ds else None,
+        (ds.pattern if ds and ds.pattern else "*rec*.bmp"),
+    )
+    info["cached"] = False
+    return info
+
+
 @router.get("/{run_id}/log.txt", response_class=PlainTextResponse)
 def run_log(run_id: int, db: Session = Depends(get_db)):
     r = db.get(Run, run_id)

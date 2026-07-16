@@ -29,6 +29,8 @@ QUICK START (on a GPU machine)
 3) Outputs land in --out:
      R4_0000.nii.gz   the stacked input volume (4 um isotropic)
      R4.nii.gz        the segmentation mask (0 = background, 1 = ROI)
+     R4_mask_bmp/     per-slice mask as 8-bit BMPs (255 = ROI), one file per input
+                      slice, named to match the source stack 1:1
      R4_preview.png   mid-ROI slice with the mask overlaid in red
      R4_result.json   ROI voxel count + physical volume
 
@@ -113,6 +115,34 @@ def make_preview(gray, seg, out_png):
     Image.fromarray(rgb).save(out_png)
     log(f"[preview] slice {z} (largest ROI) -> {out_png}")
     return z
+
+
+def write_mask_bmp(seg, files, out_dir):
+    """Write each mask Z-slice as an 8-bit BMP, mirroring the input slice names.
+
+    Kept self-contained (no app imports) so this script stays portable to a
+    GPU machine that only has nnunetv2 / SimpleITK / pillow / numpy installed.
+    Background -> 0, ROI -> 255 (binary); multi-label masks are spread over 0..255.
+    Returns (slice_count, out_dir).
+    """
+    import numpy as np
+    from PIL import Image
+    os.makedirs(out_dir, exist_ok=True)
+    Z = int(seg.shape[0])
+    maxlab = int(seg.max()) if seg.size else 0
+    if len(files) == Z:
+        names = [os.path.splitext(os.path.basename(f))[0] + ".bmp" for f in files]
+    else:
+        w = max(4, len(str(max(Z - 1, 0))))
+        names = [f"mask_{i:0{w}d}.bmp" for i in range(Z)]
+    for i in range(Z):
+        sl = seg[i]
+        if maxlab <= 1:
+            out = (sl > 0).astype(np.uint8) * 255
+        else:
+            out = np.clip(sl.astype(np.float32) * (255.0 / maxlab), 0, 255).astype(np.uint8)
+        Image.fromarray(out, "L").save(os.path.join(out_dir, names[i]), format="BMP")
+    return Z, out_dir
 
 
 def capture_env(dev, torch, timings):
@@ -226,11 +256,22 @@ def main():
     n = int((seg == 1).sum())
     vox_mm3 = args.spacing ** 3
     z = make_preview(img[0], seg, os.path.join(args.out, f"{case}_preview.png"))
+
+    # 3b) per-slice mask BMPs — mirror the input slice names, always in results
+    bmp_dir = os.path.join(args.out, f"{case}_mask_bmp")
+    bmp_count = 0
+    try:
+        bmp_count, _ = write_mask_bmp(seg, find_slices(args.slices, args.pattern), bmp_dir)
+        log(f"[bmp] wrote {bmp_count} per-slice mask BMPs -> {bmp_dir}")
+    except Exception as e:  # noqa: BLE001 — BMP export must never fail the run
+        log(f"[bmp] mask BMP export skipped: {e}")
+
     timings = {"convert_seconds": round(conv_sec, 1), "predict_seconds": round(dt, 1),
                "total_seconds": round(conv_sec + dt, 1)}
     result = {"case": case, "device": dev, "roi_voxels": n,
               "roi_mm3": round(n * vox_mm3, 6), "roi_um3": round(n * vox_mm3 * 1e9, 1),
               "seg_shape": list(seg.shape), "best_slice": z,
+              "mask_bmp_dir": bmp_dir, "mask_bmp_count": bmp_count,
               "predict_seconds": round(dt, 1), "folds": args.folds, "tta": args.tta,
               "environment": capture_env(dev, torch, timings)}
     json.dump(result, open(os.path.join(args.out, f"{case}_result.json"), "w"), indent=2)

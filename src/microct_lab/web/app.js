@@ -353,6 +353,7 @@ async function renderRunDetail(id) {
   $("#pageSub").textContent = `${r.dataset_name || ""} • ${r.model_name || ""} ${r.model_version || ""}`;
   $("#pageActions").innerHTML =
     `<button class="btn" id="cmpBtn">⇄ Compare dataset runs</button>
+     ${r.status === "succeeded" ? `<button class="btn" id="bmpBtn" title="Save the mask as one BMP per slice, in the run's results folder">🖼 Mask BMPs</button>` : ""}
      <button class="btn" id="expBtn">⭳ Export report</button>
      <a class="btn ghost" href="#/runs">← All runs</a>`;
   const snap = r.model_snapshot || {}, env = r.env || {}, p = r.params || {};
@@ -459,6 +460,26 @@ async function renderRunDetail(id) {
     if (runs.length < 2) return toast("Need ≥2 runs on this dataset to compare", "err");
     location.hash = "#/compare/" + runs.map(x => x.id).join(",");
   };
+  const bmpBtn = $("#bmpBtn");
+  if (bmpBtn) {
+    const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : Math.round(b / 1e6) + " MB";
+    api("/runs/" + id + "/bmp_status").then(s => {
+      if (s && s.exists) { bmpBtn.innerHTML = `🖼 Mask BMPs ✓ ${s.count}`; bmpBtn.title = `${s.count} slices · ${fmtSize(s.bytes)}\n${s.dir}`; }
+    }).catch(() => { });
+    bmpBtn.onclick = async () => {
+      const orig = bmpBtn.innerHTML;
+      bmpBtn.disabled = true; bmpBtn.innerHTML = `<span class="spin"></span> writing…`;
+      try {
+        const info = await api("/runs/" + id + "/export_bmp", { method: "POST" });
+        bmpBtn.innerHTML = `🖼 Mask BMPs ✓ ${info.count}`;
+        bmpBtn.title = `${info.count} slices · ${fmtSize(info.bytes)}\n${info.dir}`;
+        toast(info.cached ? `Mask BMPs already present — ${info.count} slices in ${info.dir}`
+          : `Saved ${info.count} mask BMPs (${fmtSize(info.bytes)}) → ${info.dir}`, "ok");
+      } catch (e) {
+        bmpBtn.innerHTML = orig; toast("BMP export failed: " + e.message, "err");
+      } finally { bmpBtn.disabled = false; }
+    };
+  }
 
   initSplitter();
   const main = document.querySelector(".main"); if (main) main.scrollTop = 0;
