@@ -548,6 +548,7 @@ async function mountLinkedCompare(runs) {
       </div>
       <button class="btn sm" id="clZin" title="zoom in">＋</button>
       <button class="btn sm" id="clZout" title="zoom out">－</button>
+      <button class="btn sm" id="clPan" title="Pan mode (P) — then drag either image">✋</button>
       <button class="btn sm" id="clReset" title="reset view">⟲</button>
       <label class="checkline" style="font-size:12px"><input type="checkbox" id="clSync" checked> sync panes</label>
       <div class="grow"></div>
@@ -576,21 +577,23 @@ async function mountLinkedCompare(runs) {
     window.__nvA = nvA; window.__nvB = nvB; window.__nv = nvA;
     const both = [nvA, nvB];
     const SL = { mpr: nvA.sliceTypeMultiplanar, ax: nvA.sliceTypeAxial, cor: nvA.sliceTypeCoronal, sag: nvA.sliceTypeSagittal, "3d": nvA.sliceTypeRender };
-    let cur = "mpr", idx = 0, zoom = 1, syncing = true, guard = false;
+    let cur = "mpr", idx = 0, zoom = 1, syncing = true, guard = false, panOn = false;
     const axisN = (m) => { const d = (nvA.volumes[0] && nvA.volumes[0].dims) || [3, 1, 1, 1]; return m === "ax" ? { i: 2, n: d[3] } : m === "cor" ? { i: 1, n: d[2] } : m === "sag" ? { i: 0, n: d[1] } : null; };
     const stopCine = () => { if (window.__clcine) { clearInterval(window.__clcine); window.__clcine = null; } const pb = document.getElementById("clPlay"); if (pb) pb.innerHTML = "▶"; };
     const gotoBoth = (ai, i) => { i = ((i % ai.n) + ai.n) % ai.n; guard = true; both.forEach(nv => { try { const p = (nv.scene && nv.scene.crosshairPos) ? Array.from(nv.scene.crosshairPos) : [0.5, 0.5, 0.5]; p[ai.i] = (i + 0.5) / ai.n; nv.scene.crosshairPos = p; nv.drawScene(); } catch { } }); guard = false; return i; };
     const setSlice = (i) => { const ai = axisN(cur); if (!ai) return; idx = gotoBoth(ai, i); const sl = document.getElementById("clSlider"), lb = document.getElementById("clLabel"); if (sl) sl.value = idx; if (lb) lb.textContent = `${idx + 1} / ${ai.n}`; };
     const updateCine = (m) => { const ai = axisN(m), bar = document.getElementById("clCine"); if (!ai) { bar.style.display = "none"; stopCine(); return; } bar.style.display = "flex"; document.getElementById("clSlider").max = ai.n - 1; idx = Math.min(idx, ai.n - 1); setSlice(idx); };
     const setMode = (m) => { cur = m; stopCine(); both.forEach(nv => { try { nv.setSliceType(SL[m]); } catch { } }); box.querySelectorAll("#clModes .btn").forEach(b => b.classList.toggle("primary", b.dataset.m === m)); updateCine(m); };
-    const applyZoom = (z) => { zoom = Math.max(0.4, Math.min(10, z)); both.forEach(nv => { try { if (nv.scene && nv.scene.pan2Dxyzmm) { nv.scene.pan2Dxyzmm[3] = zoom; nv.drawScene(); } } catch { } }); };
+    const setPan = (on) => { panOn = on; const pb = document.getElementById("clPan"); if (pb) pb.classList.toggle("primary", on); both.forEach(nv => { try { const dm = nv.dragModes || {}; nv.opts.dragMode = on ? (dm.pan ?? 3) : (dm.contrast ?? 1); } catch { } }); };
+    const applyZoom = (z) => { zoom = Math.max(0.4, Math.min(10, z)); if (zoom > 1.01 && !panOn) setPan(true); both.forEach(nv => { try { if (nv.scene && nv.scene.pan2Dxyzmm) { nv.scene.pan2Dxyzmm[3] = zoom; nv.drawScene(); } } catch { } }); };
     const mirror = (from, to) => { if (!syncing || guard) return; guard = true; try { to.scene.crosshairPos = Array.from(from.scene.crosshairPos); to.drawScene(); } catch { } guard = false; };
     nvA.onLocationChange = () => mirror(nvA, nvB);
     nvB.onLocationChange = () => mirror(nvB, nvA);
     box.querySelectorAll("#clModes .btn").forEach(b => b.onclick = () => setMode(b.dataset.m));
     document.getElementById("clZin").onclick = () => applyZoom(zoom * 1.25);
     document.getElementById("clZout").onclick = () => applyZoom(zoom / 1.25);
-    document.getElementById("clReset").onclick = () => { zoom = 1; both.forEach(nv => { try { if (nv.scene && nv.scene.pan2Dxyzmm) nv.scene.pan2Dxyzmm.set([0, 0, 0, 1]); } catch { } }); setMode("mpr"); };
+    document.getElementById("clPan").onclick = () => setPan(!panOn);
+    document.getElementById("clReset").onclick = () => { zoom = 1; setPan(false); both.forEach(nv => { try { if (nv.scene && nv.scene.pan2Dxyzmm) nv.scene.pan2Dxyzmm.set([0, 0, 0, 1]); } catch { } }); setMode("mpr"); };
     document.getElementById("clSync").onchange = e => { syncing = e.target.checked; };
     document.getElementById("clOpA").oninput = e => { try { nvA.setOpacity(1, +e.target.value); } catch { } };
     document.getElementById("clOpB").oninput = e => { try { nvB.setOpacity(1, +e.target.value); } catch { } };
@@ -599,6 +602,16 @@ async function mountLinkedCompare(runs) {
     document.getElementById("clSlider").oninput = e => { stopCine(); setSlice(+e.target.value); };
     document.getElementById("clPlay").onclick = () => { if (window.__clcine) { stopCine(); return; } const fps = +document.getElementById("clFps").value || 12; document.getElementById("clPlay").innerHTML = "⏸"; window.__clcine = setInterval(() => { if (!document.getElementById("glA")) { stopCine(); return; } setSlice(idx + 1); }, 1000 / fps); };
     document.getElementById("clMax").onclick = () => { const on = box.classList.toggle("vmax"); document.body.style.overflow = on ? "hidden" : ""; document.getElementById("clMax").innerHTML = on ? "⤡" : "⤢"; setTimeout(() => { both.forEach(nv => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }); }, 60); };
+    const clkey = (e) => {
+      if (!document.getElementById("glA")) { document.removeEventListener("keydown", clkey); return; }
+      if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+      if (e.key === "p" || e.key === "P") setPan(!panOn);
+      else if (e.key === "+" || e.key === "=") applyZoom(zoom * 1.25);
+      else if (e.key === "-" || e.key === "_") applyZoom(zoom / 1.25);
+      else if (e.key === "f" || e.key === "F") document.getElementById("clMax").click();
+      else if (e.key === "Escape" && box.classList.contains("vmax")) document.getElementById("clMax").click();
+    };
+    document.addEventListener("keydown", clkey);
     setMode("mpr");
     setTimeout(() => { both.forEach(nv => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }); }, 90);
   } catch (e) {
@@ -740,6 +753,7 @@ async function mountViewer(volumes, opts = {}) {
     });
     const applyZoom = (z) => {
       zoom = Math.max(0.4, Math.min(10, z));
+      if (zoom > 1.01 && !panOn) setPan(true);
       try { if (nv.scene && nv.scene.pan2Dxyzmm) { nv.scene.pan2Dxyzmm[3] = zoom; nv.drawScene(); } } catch { }
     };
     const setPan = (on) => {
