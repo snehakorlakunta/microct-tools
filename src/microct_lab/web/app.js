@@ -391,7 +391,12 @@ async function renderRunDetail(id) {
     wrapCard("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log">loading…</div>`),
   ].join("");
 
-  $("#content").innerHTML = bar +
+  const active = r.status === "running" || r.status === "queued";
+  const progHtml = active ? `<div class="runprog" id="runProg">
+       <div class="rp-head"><span class="rp-phase">preparing…</span><span class="rp-elapsed muted"></span></div>
+       <div class="rp-track"><div class="rp-fill" style="width:0%"></div></div>
+       <div class="rp-sub muted"></div></div>` : "";
+  $("#content").innerHTML = bar + progHtml +
     `<div class="report-split">
        <div class="report-left" id="repLeft">${leftHtml}</div>
        <div class="splitter" id="splitter"></div>
@@ -427,11 +432,7 @@ async function renderRunDetail(id) {
     ], { hasMask: true, previewUrl: `/api/runs/${id}/preview.png`, downloadUrl: `/api/runs/${id}/mask.nii.gz` });
     else if (r.status === "running" || r.status === "queued") {
       $("#viewer").innerHTML = `<div class="vfallback"><span class="spin"></span> ${r.status}… the viewer appears when the mask is ready.</div>`;
-      pollTimer = setInterval(async () => {
-        const u = await api("/runs/" + id);
-        if (u.status !== r.status) { if (parseHash().view === "run") renderRunDetail(id); }
-        else if (panelShown.has("log")) loadLog(id);
-      }, 4000);
+      // progress + status polling is driven by the dedicated poller below.
     } else {
       $("#viewer").innerHTML = `<div class="vfallback"><div class="big" style="font-size:32px">⚠</div>${r.status}. See log below.<br><span class="muted">${esc(r.error || "")}</span></div>`;
     }
@@ -488,6 +489,37 @@ async function renderRunDetail(id) {
   applyPanelVisibility();
   ensureViewer();
   setTimeout(fitReport, 80);
+
+  if (active) {
+    const PHASE = { starting: "Starting", queued: "Queued", converting: "Converting slices → volume",
+      loading: "Loading model", predicting: "Segmenting — nnU-Net inference",
+      finalizing: "Finalizing — mask, preview, BMPs",
+      succeeded: "Complete", failed: "Failed", canceled: "Canceled" };
+    const paintProg = (p) => {
+      const el = $("#runProg"); if (!el || !p) return;
+      el.querySelector(".rp-phase").textContent = (PHASE[p.phase] || p.phase || "Working")
+        + (p.percent != null ? ` — ${p.percent}%` : "");
+      const fill = el.querySelector(".rp-fill");
+      if (p.determinate && p.percent != null) { el.classList.remove("indet"); fill.style.width = p.percent + "%"; }
+      else { el.classList.add("indet"); }
+      const sub = []; if (p.detail) sub.push(p.detail);
+      if (p.eta_sec != null) sub.push("~" + fmtDur(p.eta_sec) + " left");
+      el.querySelector(".rp-sub").textContent = sub.join("  ·  ");
+      el.querySelector(".rp-elapsed").textContent = p.elapsed_sec != null ? fmtDur(p.elapsed_sec) + " elapsed" : "";
+    };
+    const tick = async () => {
+      if (parseHash().view !== "run") return;
+      let p = null;
+      try { p = await api("/runs/" + id + "/progress"); } catch { }
+      if (p) {
+        paintProg(p);
+        if (["succeeded", "failed", "canceled"].includes(p.status)) { renderRunDetail(id); return; }
+      }
+      if (panelShown.has("log")) loadLog(id);
+    };
+    tick();
+    pollTimer = setInterval(tick, 3000);
+  }
 }
 
 function exportReport(r) {

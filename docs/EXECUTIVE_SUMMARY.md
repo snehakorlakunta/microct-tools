@@ -21,8 +21,11 @@ It turns that manual grind into an automated, consistent, and auditable workflow
   *same* criterion to every new scan. On the R2 sample it labelled ~9.8 million
   voxels (an ROI volume of **0.63 mm³**) on its own.
 - A **self-hosted dashboard** manages the whole lifecycle: it catalogs scans and
-  their metadata, runs the model, stores results, and shows them in an
-  **in-browser 3D/2D viewer** — no external software, no file wrangling.
+  their metadata, runs the model (with a **live progress bar**), stores results, and
+  shows them in an **in-browser 3D/2D viewer** — no external software, no file
+  wrangling. Two model versions of the same scan can be opened in a **synced
+  side-by-side viewer** to confirm an improvement, and every result is also saved as
+  a **per-slice image stack** for use in other tools.
 - Every result is **traceable**: which model version (down to a fingerprint of the
   exact weights) produced it, on which machine, how long it took, and with what
   settings.

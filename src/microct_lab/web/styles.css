@@ -262,3 +262,18 @@ input[type=range]{accent-color:var(--accent)}
   pointer-events:none;display:flex;align-items:center;gap:6px}
 .clviewer.vmax{position:fixed;inset:0;z-index:70;border-radius:0;height:100vh}
 .clviewer.vmax .clpanes{flex:1;height:auto;min-height:0}
+
+/* in-progress run banner (phase + sliding-window percent) */
+.runprog{border:1px solid var(--border);background:var(--panel);border-radius:var(--radius);
+  padding:12px 14px;margin-bottom:14px;display:flex;flex-direction:column;gap:8px}
+.runprog .rp-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.runprog .rp-phase{font-weight:600;font-size:13px;color:var(--text)}
+.runprog .rp-elapsed{font-size:11.5px}
+.runprog .rp-track{height:8px;border-radius:6px;background:var(--panel3);overflow:hidden;position:relative}
+.runprog .rp-fill{height:100%;width:0;border-radius:6px;
+  background:linear-gradient(90deg,var(--accent),#5b8cff);transition:width .4s ease}
+.runprog .rp-sub{font-size:11.5px}
+.runprog.indet .rp-fill{width:38%!important;transition:none;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  animation:rpslide 1.2s infinite linear}
+@keyframes rpslide{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}

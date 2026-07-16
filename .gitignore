@@ -41,3 +41,6 @@ Thumbs.db
 # archives
 *.tar.gz
 *.tgz
+
+# --- Bundled offline wheelhouse (large binaries; shipped on the USB, not in git) ---
+/dependencies/

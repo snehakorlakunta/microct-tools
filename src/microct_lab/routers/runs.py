@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 import os
+import re
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -282,6 +284,96 @@ def export_bmp(run_id: int, force: bool = False, db: Session = Depends(get_db)):
     )
     info["cached"] = False
     return info
+
+
+# ---- live progress for an in-flight run -------------------------------------
+# Unit of measure: nnU-Net segments a volume as a grid of overlapping
+# sliding-window *patches*; the number of patches completed / total is the most
+# faithful measure of compute done. We fold that into an overall percentage
+# across the three phases the pipeline logs: converting the slice stack to a
+# volume (~2-15%), sliding-window inference (~15-90%), and finalizing / writing
+# the mask + preview + BMPs (~90-100%). When the patch count can't be parsed we
+# still report the phase and drive an indeterminate (animated) bar.
+def _parse_progress(text: str):
+    """Return (phase, percent|None, determinate, detail) from run-log text."""
+    if not text:
+        return ("starting", 2, True, "")
+
+    if "\nDONE" in text or text.rstrip().endswith("DONE"):
+        return ("finalizing", 99, True, "")
+    if "[bmp]" in text or "[result]" in text:
+        return ("finalizing", 96, True, "writing mask / preview / BMPs")
+    if "prediction done" in text:
+        return ("finalizing", 92, True, "")
+
+    if "predicting ===" in text or "model loaded" in text:
+        seg = text.split("predicting ===", 1)[-1]
+        cur_tot = None
+        for m in re.finditer(r"\b(\d+)\s*/\s*(\d+)\b", seg):
+            cur_tot = (int(m.group(1)), int(m.group(2)))
+        pct = None
+        for m in re.finditer(r"(\d{1,3})%\|", seg):
+            pct = int(m.group(1))
+        frac, detail = None, "sliding-window inference"
+        if cur_tot and cur_tot[1] > 0:
+            frac = cur_tot[0] / cur_tot[1]
+            detail = f"patch {cur_tot[0]}/{cur_tot[1]}"
+        elif pct is not None:
+            frac = pct / 100.0
+            detail = f"{pct}%"
+        if frac is not None:
+            return ("predicting", int(round(15 + 75 * min(max(frac, 0.0), 1.0))), True, detail)
+        return ("predicting", None, False, detail)
+
+    if "[convert] wrote" in text:
+        return ("loading", 15, True, "loading model weights")
+
+    conv_cur = None
+    for m in re.finditer(r"\[convert\]\s+(\d+)/(\d+)", text):
+        conv_cur = (int(m.group(1)), int(m.group(2)))
+    if conv_cur and conv_cur[1] > 0:
+        return ("converting", int(round(2 + 13 * conv_cur[0] / conv_cur[1])),
+                True, f"slice {conv_cur[0]}/{conv_cur[1]}")
+    tot = re.search(r"\[convert\]\s+(\d+)\s+slices", text)
+    if tot:
+        return ("converting", 3, True, f"0/{tot.group(1)} slices")
+    return ("starting", 2, True, "")
+
+
+@router.get("/{run_id}/progress")
+def run_progress(run_id: int, db: Session = Depends(get_db)):
+    r = db.get(Run, run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    if r.status in ("succeeded", "failed", "canceled"):
+        return {"status": r.status, "phase": r.status,
+                "percent": 100 if r.status == "succeeded" else None,
+                "determinate": True, "detail": r.error or "",
+                "elapsed_sec": r.duration_sec, "eta_sec": None}
+    if r.status == "queued":
+        return {"status": "queued", "phase": "queued", "percent": 0,
+                "determinate": True, "detail": "waiting for a free worker",
+                "elapsed_sec": 0, "eta_sec": None}
+
+    text = ""
+    if r.log_path and os.path.exists(r.log_path):
+        try:
+            with open(r.log_path, encoding="utf-8", errors="replace") as f:
+                text = f.read()[-20000:]
+        except OSError:
+            pass
+    phase, pct, det, detail = _parse_progress(text)
+    elapsed = None
+    if r.started_at:
+        try:
+            elapsed = max(0.0, (datetime.utcnow() - r.started_at).total_seconds())
+        except (TypeError, ValueError):
+            elapsed = None
+    eta = None
+    if det and pct and pct > 5 and elapsed:
+        eta = max(0.0, elapsed * (100 - pct) / pct)
+    return {"status": "running", "phase": phase, "percent": pct, "determinate": det,
+            "detail": detail, "elapsed_sec": elapsed, "eta_sec": eta}
 
 
 @router.get("/{run_id}/log.txt", response_class=PlainTextResponse)

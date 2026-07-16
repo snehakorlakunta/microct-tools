@@ -1,0 +1,23 @@
+# Core dependencies for the microCT Seg Lab dashboard (what run.bat needs).
+# Covers the web app, the job worker, result viewing, and per-slice BMP export.
+#
+# The heavy segmentation ENGINE (PyTorch + nnU-Net) is intentionally NOT listed
+# here — it is large and hardware/CUDA-specific. See DEPENDENCIES.md for how to
+# add it on the machine that actually runs segmentation (the GPU box).
+#
+# Build tools are included so `pip install -e .` works fully offline from the
+# bundled wheelhouse (pip build-isolation pulls setuptools/wheel from it).
+pip
+setuptools>=68
+wheel
+fastapi>=0.110
+uvicorn[standard]>=0.27
+SQLAlchemy>=2.0
+pydantic>=2.5
+pydantic-settings>=2.1
+python-multipart>=0.0.9
+Pillow>=10.0
+numpy>=1.24
+SimpleITK>=2.3
+psutil>=5.9
+natsort>=8

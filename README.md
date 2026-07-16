@@ -44,6 +44,8 @@ supervise at scale.
 - **[User guide](docs/USER_GUIDE.md)** — click-by-click daily use (UI, viewer, QC, compare).
 - **[Technical guide](docs/TECHNICAL_GUIDE.md)** — how segmentation works, and the full
   feedback → correct → retrain → register-new-version → re-run loop.
+- **[Dependencies & offline install](DEPENDENCIES.md)** — what a fresh machine needs,
+  the bundled wheelhouse, and how to add the GPU segmentation engine.
 
 ---
 
@@ -59,7 +61,15 @@ supervise at scale.
 - **Runs** — queue a dataset + model → the worker runs segmentation → results
   (mask, ROI volume, preview) are stored and tracked. Every run records **which
   model + version + fingerprint** produced it, so results stay traceable and you
-  can compare versions on the same dataset.
+  can compare versions on the same dataset. In-progress runs show a **live
+  progress bar** (phase + sliding-window percent + ETA). Each result also saves a
+  **per-slice mask BMP stack** (`<case>_mask_bmp/`, one 8-bit BMP per slice, named
+  1:1 to the input) automatically.
+- **Viewer & comparison** — an embedded NiiVue viewer (mask overlaid in red, MPR /
+  axial / coronal / sagittal / 3D, cine, pan/zoom, maximize). Two or more succeeded
+  runs open a **linked comparison viewer**: side-by-side live panes under one shared
+  toolbar with **synced** crosshair/scrub, so `v1` vs `v2` are always at the same
+  location. Raw datasets can also be visualized on their own, before any run.
 - **QC & failure modes** — on each result, set an outcome (pass / minor / fail),
   tag **failure modes** from a vocabulary (false-positive-outside, boundary
   leak, artifact confusion, …), add notes, and **flag for retraining**. The
@@ -122,6 +132,10 @@ it creates the venv, installs, starts the worker + web server, and opens the
 browser. Set `MICROCT_HOST=0.0.0.0` in `.env` to let colleagues reach it on your
 LAN at `http://<your-ip>:8000`.
 
+> **Fresh machine, no internet?** Install **Python 3.12 (64-bit)** and run
+> `run.bat` — it installs the dashboard **offline** from the bundled
+> `dependencies/` wheelhouse. See [DEPENDENCIES.md](DEPENDENCIES.md).
+
 ### First-time flow in the UI
 1. **Models → Register model** → paste a trained model folder path.
 2. **Datasets → Ingest datasets** → scans `MICROCT_DATA_ROOT`.
@@ -138,10 +152,10 @@ CLI equivalents (also in `scripts/`): `microct-register-model <path>`,
 The repo is self-contained. Copy the folder to a USB stick, plug it into the
 target machine, and run `run.bat` / `run.sh`. Notes:
 
-- **First run needs internet once** to `pip install` dependencies into a local
-  `.venv` inside the folder. For a fully offline target, pre-download wheels:
-  `pip download -d vendor_wheels -e .` on an online machine, then
-  `pip install --no-index --find-links vendor_wheels -e .` on the target.
+- **Offline-ready.** A **bundled wheelhouse** (`dependencies/`, Windows x64 /
+  Python 3.12) ships on the USB, so `run.bat` installs the dashboard with **no
+  internet** — you only need Python 3.12 on the target. See
+  [DEPENDENCIES.md](DEPENDENCIES.md) to refresh it or build it for another platform.
 - **The viewer is already offline** — NiiVue is vendored at
   `src/microct_lab/web/vendor/niivue.js` (falls back to CDN only if missing).
 - **The dashboard is light and portable.** The heavy part is segmentation
@@ -158,8 +172,11 @@ target machine, and run `run.bat` / `run.sh`. Notes:
 ```
 microct-seg-lab/
 ├── pyproject.toml            # pip-installable; console scripts
+├── requirements-core.txt     # dashboard deps (used to build the wheelhouse)
+├── DEPENDENCIES.md           # offline install + GPU engine notes
+├── dependencies/             # bundled wheelhouse (on the USB; git-ignored)
 ├── .env.example              # config: external data/results/models/DB paths
-├── run.bat / run.sh          # one-click launchers (venv + install + serve)
+├── run.bat / run.sh          # one-click launchers (venv + offline install + serve)
 ├── Dockerfile / docker-compose.yml
 ├── scripts/                  # all runnable scripts, checked in
 │   ├── segment_microct.py    # the GPU-ready segmentation pipeline (portable)
@@ -168,6 +185,7 @@ microct-seg-lab/
 └── src/microct_lab/          # the installable package
     ├── config.py  database.py  models.py  schemas.py
     ├── logparse.py  modelmeta.py  registry.py  worker.py  cli.py
+    ├── bmp_export.py          # mask → per-slice BMP stack
     ├── routers/   (system, models, datasets, runs)
     └── web/       index.html  styles.css  app.js  vendor/niivue.js
 ```

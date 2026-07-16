@@ -1,0 +1,118 @@
+# Dependencies & offline install
+
+This app ships with a **bundled wheelhouse** so a fresh machine can install the
+dashboard with **no internet connection**. This document explains what is
+bundled, what you must install yourself, and how to add the (large, GPU‑specific)
+segmentation engine.
+
+---
+
+## 1. What you need on a new machine before `run.bat` works
+
+Copy the whole USB folder to the new machine, then:
+
+1. **Install Python 3.12 (64‑bit) for Windows** from python.org.
+   - On the first installer screen, tick **“Add python.exe to PATH.”**
+   - Python **3.12** is important: the bundled wheels are built for 3.12 / 64‑bit
+     Windows. 3.10 or 3.11 will also work for the pure‑Python parts but a few
+     compiled wheels (numpy, Pillow, pydantic‑core, …) are 3.12‑specific.
+2. **Double‑click `run.bat`.**
+
+That’s it. `run.bat` creates a local `.venv`, installs everything **offline** from
+`.\dependencies`, starts the job worker + web server, and opens
+`http://127.0.0.1:8000`.
+
+You do **not** need Git, Docker, Visual C++ build tools, or an internet
+connection to run the dashboard. (Git is only needed if you want to keep using
+version control.)
+
+> The dashboard (catalog, run tracking, result/BMP viewing, comparison) runs
+> without PyTorch. PyTorch + nnU‑Net are only required to **execute new
+> segmentations** — see section 3.
+
+---
+
+## 2. What is bundled (`.\dependencies`)
+
+A pip “wheelhouse” — one `.whl` per package — for the **core dashboard**:
+
+- Web/app: fastapi, uvicorn[standard] (h11, httptools, websockets, watchfiles,
+  pyyaml, python‑dotenv, click, colorama, anyio, idna, starlette, h11),
+  python‑multipart
+- Data/DB: SQLAlchemy (+greenlet), pydantic (+pydantic‑core), pydantic‑settings
+- Imaging: Pillow, numpy, SimpleITK
+- Utility: psutil, natsort
+- Build tools so `pip install -e .` works offline: pip, setuptools, wheel
+
+Platform: **Windows x86‑64, CPython 3.12**. Total ≈ 50 MB.
+
+`run.bat` installs from here automatically when the folder is present
+(`pip install --no-index --find-links dependencies -e .`). If the folder is
+missing, it falls back to installing from PyPI over the internet.
+
+### Refresh / rebuild the wheelhouse
+
+From the app folder, on a Windows + Python 3.12 machine with internet:
+
+```
+python -m pip download -d dependencies -r requirements-core.txt
+```
+
+To build it for a **different** target (e.g. another Python version or Linux),
+add pip’s platform flags, e.g. for 64‑bit Windows + Python 3.11:
+
+```
+python -m pip download -d dependencies -r requirements-core.txt ^
+  --only-binary=:all: --platform win_amd64 --python-version 3.11
+```
+
+---
+
+## 3. The segmentation engine (PyTorch + nnU‑Net) — NOT bundled
+
+PyTorch is large (hundreds of MB to several GB) and **hardware‑specific**: the
+build must match the target machine’s GPU/CUDA (or be a CPU build). Bundling a
+single copy would be wrong for most machines, so it is intentionally left out.
+
+Install it **once** on the machine that will actually run segmentation:
+
+### GPU machine (recommended — minutes per volume)
+
+1. Pick the CUDA build of PyTorch for that machine’s CUDA from
+   <https://pytorch.org/get-started/locally/>, e.g. for CUDA 12.1:
+   ```
+   pip install torch --index-url https://download.pytorch.org/whl/cu121
+   ```
+2. Then the segmentation extras:
+   ```
+   pip install nnunetv2 natsort
+   ```
+   (or, from the app folder, `pip install -e ".[seg]"` after step 1.)
+
+### CPU‑only (works, but slow — hours per volume)
+
+```
+pip install torch nnunetv2 natsort
+```
+
+### Pre‑bundle the engine for offline install (optional)
+
+On a machine that matches the target, download the engine wheels into a second
+folder and copy it to the USB:
+
+```
+python -m pip download -d dependencies-seg torch nnunetv2 natsort
+```
+
+Then on the target: `pip install --no-index --find-links dependencies-seg torch nnunetv2 natsort`.
+For a CUDA build, add `--index-url https://download.pytorch.org/whl/cu121` to the
+`pip download` command so the right torch is fetched.
+
+---
+
+## 4. Summary
+
+| Task | Needs internet? | Needs GPU stack? |
+|------|-----------------|------------------|
+| Run the dashboard, view/compare results, export BMPs | No (uses `.\dependencies`) | No |
+| Run a **new** segmentation | Once, to install torch + nnU‑Net (unless pre‑bundled) | GPU recommended |

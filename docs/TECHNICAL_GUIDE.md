@@ -81,8 +81,22 @@ downsampled `view_*` copies for display.
    a new scan.
 
 The compute itself is the `scripts/segment_microct.py` pipeline (stack → NIfTI →
-nnU-Net → mask + volume + preview + environment). The worker calls it per queued
-run; it is also usable standalone on any machine.
+nnU-Net → mask + volume + preview + **per-slice mask BMPs** + environment). The
+worker calls it per queued run; it is also usable standalone on any machine.
+
+**Live progress.** The pipeline logs each phase; `GET /api/runs/{id}/progress`
+parses that log into `{phase, percent, determinate, detail, elapsed_sec, eta_sec}`.
+The unit under the percentage is nnU-Net's **sliding-window patch count** (patches
+done / total) during inference — the phase that dominates runtime — mapped onto an
+overall 0–100% across convert (2–15%), model load (15%), inference (15–90%), and
+finalize (90–100%). When the patch count isn't yet parseable the bar is
+indeterminate but still names the phase. The report polls this every 3 s.
+
+**Per-slice mask BMPs.** Every run also writes `<case>_mask_bmp/` — one 8-bit BMP
+per Z-slice (255 = ROI), filenames mirroring the source stack 1:1 — via
+`src/microct_lab/bmp_export.py`. New runs generate it automatically; older runs can
+be back-filled with `POST /api/runs/{id}/export_bmp` (the report's **🖼 Mask BMPs**
+button), and `GET /api/runs/{id}/bmp_status` reports whether it exists.
 
 ---
 
@@ -185,3 +199,16 @@ CUDA build of torch, point `.env` at the data, and runs go from ~hours (CPU) to
 minutes (GPU). The registry and results are just files — copy them along, or start
 fresh and re-ingest. Model versions and their fingerprints travel with the model
 folders, so results stay traceable across machines.
+
+**Offline install of the dashboard.** The USB carries a `dependencies/` wheelhouse
+(Windows x64 / Python 3.12) covering everything the dashboard needs; `run.bat`
+installs from it with `--no-index --find-links dependencies` when present, so a
+fresh Windows machine only needs Python 3.12 and no internet. The segmentation
+engine is intentionally *not* bundled (multi-GB, CUDA-specific) — install it on the
+GPU box, or pre-bundle a matching `dependencies-seg/` folder. Full recipes,
+including cross-platform `pip download` flags, are in
+[DEPENDENCIES.md](../DEPENDENCIES.md).
+
+> Note: the wheelhouse and results paths in the seeded registry are **absolute**;
+> when you move the USB to a different drive letter or machine, re-point `.env` and
+> (if needed) re-ingest so stored paths resolve locally.

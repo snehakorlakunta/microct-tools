@@ -12,6 +12,11 @@ On the processing machine (see the main [README](../README.md) for install):
 
 - Double-click **`run.bat`** (Windows) or run **`./run.sh`** (Linux/macOS), or run
   `microct-web` and `microct-worker` in two terminals.
+- **On a fresh machine:** install **Python 3.12 (64-bit)** with *Add to PATH*, then
+  double-click `run.bat` — it installs everything **offline** from the bundled
+  `dependencies/` wheelhouse (no internet needed for the dashboard). Full details,
+  and how to add the GPU segmentation engine, are in
+  [DEPENDENCIES.md](../DEPENDENCIES.md).
 - Open **http://localhost:8000** in a browser. To let colleagues on your network
   in, set `MICROCT_HOST=0.0.0.0` in `.env` and share `http://<your-ip>:8000`.
 
@@ -82,6 +87,17 @@ step, device, machine, CPU/GPU, RAM, versions, peak memory, per-phase timings).
 
 Use **⭳ Export report** for a Markdown copy of the whole thing.
 
+**While a run is in progress**, the report shows a **live progress bar** at the top:
+the current phase (converting → loading model → segmenting → finalizing) with a
+percentage driven by nnU-Net's sliding-window patches, plus elapsed time and a
+rough ETA. It updates on its own and swaps to the finished result automatically.
+
+**Per-slice mask BMPs** — every succeeded run has a **🖼 Mask BMPs** button at the
+top of the report. The mask is saved as one 8-bit BMP per slice (white = ROI) in a
+`<case>_mask_bmp/` folder next to the result, named to match your input slices 1:1.
+New runs write this automatically; the button back-fills older runs and shows a ✓
+with the slice count once present.
+
 ---
 
 ## 6. Using the viewer
@@ -91,8 +107,9 @@ live in the **left icon rail**:
 
 - **▦ A C S ⬡** — view mode: Multiplanar (all three planes), Axial, Coronal,
   Sagittal, or 3D render.
-- **＋ / − / ✋** — zoom in, zoom out, pan mode (then drag). Also **Ctrl+scroll** to
-  zoom.
+- **＋ / − / ✋** — zoom in, zoom out, pan mode (then drag). **Ctrl+scroll** also
+  zooms. Zooming in **turns pan on automatically**, so you can immediately drag to
+  reposition instead of moving the crosshair; press **P** or **⟲** to toggle back.
 - **α** — a vertical slider for the red mask's opacity.
 - **▲ ◄ ► ▼** — rotate (shown in 3D; you can also drag to rotate, scroll to zoom).
 - **⟲** — reset view (zoom, pan, rotation, mode).
@@ -136,9 +153,15 @@ decide what to fix.
 
 When you improve the model and re-run a scan, you get a second run alongside the
 first. From a run report click **⇄ Compare dataset runs**, or tick rows on the
-**Runs** page and **Compare selected**. The compare view shows the previews side by
-side with the **ROI % difference** and a metric table across runs — so you can
-confirm whether `v2` actually improved on `v1`.
+**Runs** page and **Compare selected**.
+
+If two or more runs succeeded, the compare view opens a **linked comparison
+viewer**: both results load as live viewers **side by side under one shared
+toolbar** (view mode, zoom, ✋ pan, per-side mask opacity **α A / α B**, cine,
+maximize). With **sync panes** on (the default) scrubbing or moving the crosshair
+in one pane moves the other to the same place, so you always compare the *same*
+location in `v1` and `v2`. A metric table with the **ROI % difference** sits below.
+(Runs that haven't succeeded fall back to static previews.)
 
 ---
 
