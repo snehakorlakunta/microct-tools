@@ -95,6 +95,30 @@ Install it **once** on the machine that will actually run segmentation:
 pip install torch nnunetv2 natsort
 ```
 
+### Run a dataset on the GPU machine (e.g. R4) — results land on the USB
+
+Once the engine is installed on the GPU box, run R4 (or any dataset) so its
+outputs land straight in the USB `results/` folder:
+
+- **Via the dashboard (recommended):** plug in the USB, start `run.bat`, go to
+  **New run**, pick the model + the **R4** dataset, and start it. Because `.env`
+  points `RESULTS_ROOT` at `...\USBFiles\results`, the mask, preview, ROI volume,
+  environment debrief, **and the per-slice `R4_mask_bmp/` stack** are written there
+  automatically, and the run is tracked with the live progress bar. Nothing extra
+  to copy.
+- **Standalone (no dashboard):** run the pipeline and point `--out` into the USB:
+  ```
+  python scripts\segment_microct.py --slices <path-to>\R4\R4 ^
+    --model <trained-model-folder> --case R4 ^
+    --out <USB>\USBFiles\results\R4 --folds 0 --device auto
+  ```
+  This writes `R4.nii.gz`, `R4_mask_bmp\`, preview and `R4_result.json` into the USB
+  folder. (Use the dashboard afterwards if you also want it in the registry/UI.)
+
+> Whichever machine runs R4, its registry paths are absolute — keep `.env`'s
+> `RESULTS_ROOT` pointed at the USB `results` folder on that machine so everything
+> stays together on the stick.
+
 ### Pre‑bundle the engine for offline install (optional)
 
 On a machine that matches the target, download the engine wheels into a second
