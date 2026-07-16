@@ -137,3 +137,7 @@ def run_worker() -> None:
         print("[worker] stopping.", flush=True)
     finally:
         db.close()
+
+
+if __name__ == "__main__":
+    run_worker()

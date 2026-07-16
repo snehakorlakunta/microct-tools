@@ -1,35 +1,34 @@
 @echo off
 REM ============================================================================
-REM  microCT Segmentation Lab — Windows launcher (portable: run from anywhere)
-REM  First run creates a local .venv and installs the app. Needs internet once.
+REM  microCT Segmentation Lab - Windows launcher (run from this folder)
+REM  Uses an existing install if present; otherwise builds a local .venv.
 REM ============================================================================
 setlocal
 cd /d "%~dp0"
-
-if not exist ".venv\Scripts\python.exe" (
-  echo [setup] creating virtual environment...
-  python -m venv .venv
-  call ".venv\Scripts\activate.bat"
-  python -m pip install --upgrade pip
-  echo [setup] installing app (dashboard)...
-  pip install -e .
-  echo.
-  echo [note] To actually RUN segmentation on this machine, also install the
-  echo        compute extra once:   pip install -e ".[seg]"
-  echo        (install a CUDA build of torch first for GPU speed.)
-  echo.
-) else (
-  call ".venv\Scripts\activate.bat"
-)
-
 if not exist ".env" copy ".env.example" ".env" >nul
 
-echo [start] launching job worker in a new window...
-start "microct-worker" cmd /k ".venv\Scripts\microct-worker.exe"
+set "PY=python"
+python -c "import microct_lab" 1>nul 2>nul
+if %errorlevel%==0 goto run
 
-echo [start] opening browser...
+if not exist ".venv\Scripts\python.exe" (
+  echo [setup] creating virtual environment ...
+  python -m venv .venv
+)
+call ".venv\Scripts\activate.bat"
+echo [setup] installing app ...
+python -m pip install -e .
+set "PY=.venv\Scripts\python.exe"
+echo.
+echo [note] For segmentation on this machine, also run once: pip install -e ".[seg]"
+echo        Install a CUDA build of torch first for GPU speed.
+echo.
+
+:run
+echo [start] launching job worker in a new window ...
+start "microct-worker" cmd /k "%PY% -m microct_lab.worker"
+echo [start] opening browser ...
 timeout /t 3 >nul
 start "" http://127.0.0.1:8000
-
-echo [start] web server (close this window to stop the app)
-".venv\Scripts\microct-web.exe"
+echo [start] web server on http://127.0.0.1:8000  -  close this window to stop the app
+"%PY%" -m uvicorn microct_lab.main:app --host 127.0.0.1 --port 8000
