@@ -37,3 +37,7 @@ thumbnails/
 Thumbs.db
 .idea/
 .vscode/
+
+# archives
+*.tar.gz
+*.tgz
