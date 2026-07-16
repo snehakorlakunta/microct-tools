@@ -429,9 +429,10 @@ async function mountViewer(id) {
   try {
     const nv = new mod.Niivue({ backColor: [0.02, 0.03, 0.05, 1], show3Dcrosshair: true, crosshairColor: [1, 0.6, 0, 0.6] });
     nv.attachTo("gl");
+    // Downsampled copies for the viewer — full-res volumes overflow browser WebGL buffers.
     await nv.loadVolumes([
-      { url: `/api/runs/${id}/input.nii.gz` },
-      { url: `/api/runs/${id}/mask.nii.gz`, colormap: "red", opacity: 0.5, cal_min: 0.5, cal_max: 1 },
+      { url: `/api/runs/${id}/view_input.nii.gz` },
+      { url: `/api/runs/${id}/view_mask.nii.gz`, colormap: "red", opacity: 0.5, cal_min: 0.5, cal_max: 1 },
     ]);
     window.__nv = nv;
     $("#op").oninput = e => { try { nv.setOpacity(1, +e.target.value); } catch { } };

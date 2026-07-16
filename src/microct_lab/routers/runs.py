@@ -1,6 +1,7 @@
 """Run endpoints: enqueue, list/filter, detail, review, cancel, and file serving for NiiVue."""
 from __future__ import annotations
 
+import math
 import os
 from typing import Optional
 
@@ -174,6 +175,40 @@ def run_mask(run_id: int, db: Session = Depends(get_db)):
 def run_preview(run_id: int, db: Session = Depends(get_db)):
     r = db.get(Run, run_id)
     return _file(r, r.preview_png if r else None, "image/png")
+
+
+def _downsampled(run: Run, src: Optional[str], kind: str, target: int = 512):
+    """Serve a downsampled NIfTI for the in-browser viewer (big microCT volumes blow
+    the browser's WebGL/ArrayBuffer limits). Cached next to the run outputs. The
+    full-resolution mask/input remain available via the plain endpoints."""
+    if not src or not os.path.exists(src):
+        raise HTTPException(404, "file not available")
+    base = run.output_dir or os.path.dirname(src)
+    out = os.path.join(base, f"view_{kind}.nii.gz")
+    if not os.path.exists(out):
+        import SimpleITK as sitk
+        img = sitk.ReadImage(src)
+        f = max(1, math.ceil(max(img.GetSize()) / target))
+        if f > 1:
+            img = sitk.Shrink(img, [f, f, f])
+        sitk.WriteImage(img, out, useCompression=True)
+    return FileResponse(out, media_type="application/gzip", filename=os.path.basename(out))
+
+
+@router.get("/{run_id}/view_input.nii.gz")
+def run_view_input(run_id: int, db: Session = Depends(get_db)):
+    r = db.get(Run, run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    return _downsampled(r, r.input_nii, "input")
+
+
+@router.get("/{run_id}/view_mask.nii.gz")
+def run_view_mask(run_id: int, db: Session = Depends(get_db)):
+    r = db.get(Run, run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    return _downsampled(r, r.mask_nii, "mask")
 
 
 @router.get("/{run_id}/log.txt", response_class=PlainTextResponse)
