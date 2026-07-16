@@ -419,12 +419,25 @@ async function mountViewer(id) {
   }
   box.innerHTML = `<canvas id="gl"></canvas>
     <div class="vctrl">
-      <label>Mask opacity <input type="range" id="op" min="0" max="1" step="0.05" value="0.5"></label>
-      <label>View
-        <select class="input" id="vt" style="padding:4px 8px">
-          <option value="mpr">2D (MPR)</option><option value="3d">3D render</option>
-          <option value="ax">Axial</option></select></label>
-      <a class="btn sm ghost" href="/api/runs/${id}/mask.nii.gz" download>⭳ mask.nii.gz</a>
+      <div class="vmodes" id="vmodes">
+        <button class="btn sm" data-m="mpr">MPR</button>
+        <button class="btn sm" data-m="ax">Axial</button>
+        <button class="btn sm" data-m="cor">Coronal</button>
+        <button class="btn sm" data-m="sag">Sagittal</button>
+        <button class="btn sm" data-m="3d">3D</button>
+      </div>
+      <label>Opacity <input type="range" id="op" min="0" max="1" step="0.05" value="0.5" style="width:88px"></label>
+      <span class="vrot" id="vrot" style="display:none">
+        <button class="btn sm" data-r="l" title="rotate left">◄</button>
+        <button class="btn sm" data-r="r" title="rotate right">►</button>
+        <button class="btn sm" data-r="u" title="rotate up">▲</button>
+        <button class="btn sm" data-r="d" title="rotate down">▼</button>
+      </span>
+      <div class="grow"></div>
+      <span class="muted" style="font-size:11px">scroll = slices · drag = rotate (3D) · F = fullscreen</span>
+      <button class="btn sm" id="vreset" title="reset view">⟲ Reset</button>
+      <button class="btn sm" id="vmax" title="maximize (F)">⤢ Maximize</button>
+      <a class="btn sm ghost" href="/api/runs/${id}/mask.nii.gz" download>⭳ mask</a>
     </div>`;
   try {
     const nv = new mod.Niivue({ backColor: [0.02, 0.03, 0.05, 1], show3Dcrosshair: true, crosshairColor: [1, 0.6, 0, 0.6] });
@@ -435,15 +448,37 @@ async function mountViewer(id) {
       { url: `/api/runs/${id}/view_mask.nii.gz`, colormap: "red", opacity: 0.5, cal_min: 0.5, cal_max: 1 },
     ]);
     window.__nv = nv;
-    $("#op").oninput = e => { try { nv.setOpacity(1, +e.target.value); } catch { } };
-    $("#vt").onchange = e => {
-      const v = e.target.value;
-      try {
-        if (v === "3d") nv.setSliceType(nv.sliceTypeRender);
-        else if (v === "ax") nv.setSliceType(nv.sliceTypeAxial);
-        else nv.setSliceType(nv.sliceTypeMultiplanar);
-      } catch { }
+    const SL = { mpr: nv.sliceTypeMultiplanar, ax: nv.sliceTypeAxial, cor: nv.sliceTypeCoronal, sag: nv.sliceTypeSagittal, "3d": nv.sliceTypeRender };
+    let az = 180, el = 15;
+    const setMode = (m) => {
+      try { nv.setSliceType(SL[m]); } catch { }
+      box.querySelectorAll("#vmodes .btn").forEach(b => b.classList.toggle("primary", b.dataset.m === m));
+      const rot = box.querySelector("#vrot"); if (rot) rot.style.display = m === "3d" ? "inline-flex" : "none";
     };
+    box.querySelectorAll("#vmodes .btn").forEach(b => b.onclick = () => setMode(b.dataset.m));
+    setMode("mpr");
+    box.querySelector("#op").oninput = e => { try { nv.setOpacity(1, +e.target.value); } catch { } };
+    box.querySelectorAll("#vrot [data-r]").forEach(b => b.onclick = () => {
+      const d = b.dataset.r;
+      az += d === "l" ? -20 : d === "r" ? 20 : 0;
+      el += d === "u" ? 20 : d === "d" ? -20 : 0;
+      try { nv.setRenderAzimuthElevation(az, el); } catch { }
+    });
+    box.querySelector("#vreset").onclick = () => { az = 180; el = 15; try { nv.setRenderAzimuthElevation(az, el); } catch { } setMode("mpr"); };
+    const toggleMax = () => {
+      const on = box.classList.toggle("vmax");
+      box.querySelector("#vmax").innerHTML = on ? "⤡ Restore" : "⤢ Maximize";
+      document.body.style.overflow = on ? "hidden" : "";
+      setTimeout(() => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }, 60);
+    };
+    box.querySelector("#vmax").onclick = toggleMax;
+    const keyh = (e) => {
+      if (!document.getElementById("gl")) { document.removeEventListener("keydown", keyh); return; }
+      if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+      if (e.key === "f" || e.key === "F") toggleMax();
+      else if (e.key === "Escape" && box.classList.contains("vmax")) toggleMax();
+    };
+    document.addEventListener("keydown", keyh);
   } catch (e) {
     box.innerHTML = `<div class="vfallback"><img src="/api/runs/${id}/preview.png"><div class="muted">Viewer error: ${esc(e.message)}</div></div>`;
   }
