@@ -98,6 +98,14 @@ per Z-slice (255 = ROI), filenames mirroring the source stack 1:1 — via
 be back-filled with `POST /api/runs/{id}/export_bmp` (the report's **🖼 Mask BMPs**
 button), and `GET /api/runs/{id}/bmp_status` reports whether it exists.
 
+**Stopping & deleting runs.** `POST /api/runs/{id}/cancel` cancels a queued run
+immediately; for a running run it sets status `canceling`. The worker runs the
+segmentation as a `Popen` child and polls the DB every ~2 s — on seeing `canceling`
+it kills the process tree (psutil) and finalizes the run as `canceled` (a crash
+mid-run is likewise recovered to `canceled`/`failed` on worker restart).
+`DELETE /api/runs/{id}?purge=true` removes the registry record and, when purge is
+set, the run's `output_dir` from disk; in-flight runs must be stopped first.
+
 ---
 
 ## 4. Interpreting results & recording feedback

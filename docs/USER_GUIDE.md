@@ -64,6 +64,17 @@ The Datasets page is a searchable catalog:
 - Click **Queue run(s)**. The job worker picks them up one at a time. Watch status
   on the **Runs** page (queued → running → succeeded).
 
+**Stopping a run.** A queued or running run can be stopped with **■ Stop run** on
+its report (or the ■ icon on the Runs list). A queued run is canceled instantly; a
+running one is flagged *canceling* and the worker stops the segmentation process
+within a few seconds and marks it **canceled**.
+
+**Cleaning up.** Failed or canceled runs show a **🗑 Delete** (report) or trash icon
+(Runs list) to remove them from the registry. The confirm dialog offers to **also
+delete the result files on disk** (ticked by default for failed/canceled runs) so
+you can reclaim space. Succeeded runs can be deleted too, but the file-delete box is
+unticked by default so you don't lose a good mask by accident.
+
 > On a GPU this is minutes per scan; on a CPU expect ~1–2 hours for a large volume.
 
 ---
