@@ -521,6 +521,10 @@ async function mountViewer(id) {
       <button class="vbtn" data-m="sag" title="Sagittal">S</button>
       <button class="vbtn" data-m="3d" title="3D render">⬡</button>
       <div class="vsep"></div>
+      <button class="vbtn" id="zin" title="Zoom in (+ or Ctrl+scroll)">＋</button>
+      <button class="vbtn" id="zout" title="Zoom out (− or Ctrl+scroll)">－</button>
+      <button class="vbtn" id="pan" title="Pan mode (P) — then drag the image">✋</button>
+      <div class="vsep"></div>
       <div class="vopac" title="Mask opacity"><input type="range" id="op" min="0" max="1" step="0.05" value="0.5"><span>α</span></div>
       <div class="vrot" id="vrot" style="display:none">
         <button class="vbtn xs" data-r="u" title="rotate up">▲</button>
@@ -555,7 +559,7 @@ async function mountViewer(id) {
     window.__nv = nv;
     setTimeout(() => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }, 60);
     const SL = { mpr: nv.sliceTypeMultiplanar, ax: nv.sliceTypeAxial, cor: nv.sliceTypeCoronal, sag: nv.sliceTypeSagittal, "3d": nv.sliceTypeRender };
-    let az = 180, el = 15, cur = "mpr", idx = 0;
+    let az = 180, el = 15, cur = "mpr", idx = 0, zoom = 1, panOn = false;
     const stopCine = () => {
       if (window.__cine) { clearInterval(window.__cine); window.__cine = null; }
       const pb = box.querySelector("#cinePlay"); if (pb) pb.innerHTML = "▶ Play";
@@ -603,7 +607,27 @@ async function mountViewer(id) {
       el += d === "u" ? 20 : d === "d" ? -20 : 0;
       try { nv.setRenderAzimuthElevation(az, el); } catch { }
     });
-    box.querySelector("#vreset").onclick = () => { az = 180; el = 15; try { nv.setRenderAzimuthElevation(az, el); } catch { } setMode("mpr"); };
+    const applyZoom = (z) => {
+      zoom = Math.max(0.4, Math.min(10, z));
+      try { if (nv.scene && nv.scene.pan2Dxyzmm) { nv.scene.pan2Dxyzmm[3] = zoom; nv.drawScene(); } } catch { }
+    };
+    const setPan = (on) => {
+      panOn = on;
+      const pb = box.querySelector("#pan"); if (pb) pb.classList.toggle("active", on);
+      try { const dm = nv.dragModes || {}; nv.opts.dragMode = on ? (dm.pan ?? 3) : (dm.contrast ?? 1); } catch { }
+    };
+    box.querySelector("#zin").onclick = () => applyZoom(zoom * 1.25);
+    box.querySelector("#zout").onclick = () => applyZoom(zoom / 1.25);
+    box.querySelector("#pan").onclick = () => setPan(!panOn);
+    box.querySelector("#gl").addEventListener("wheel", (e) => {
+      if (e.ctrlKey) { e.preventDefault(); e.stopPropagation(); applyZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)); }
+    }, { passive: false, capture: true });
+    box.querySelector("#vreset").onclick = () => {
+      az = 180; el = 15; zoom = 1; setPan(false);
+      try { nv.setRenderAzimuthElevation(az, el); } catch { }
+      try { if (nv.scene && nv.scene.pan2Dxyzmm) { nv.scene.pan2Dxyzmm.set([0, 0, 0, 1]); nv.drawScene(); } } catch { }
+      setMode("mpr");
+    };
     box.querySelector("#cinePrev").onclick = () => { stopCine(); setSlice(idx - 1); };
     box.querySelector("#cineNext").onclick = () => { stopCine(); setSlice(idx + 1); };
     box.querySelector("#cineSlider").oninput = e => { stopCine(); setSlice(+e.target.value); };
@@ -633,6 +657,10 @@ async function mountViewer(id) {
       else if (e.key === " " && cineOn) { e.preventDefault(); box.querySelector("#cinePlay").click(); }
       else if (e.key === "ArrowLeft" && cineOn) box.querySelector("#cinePrev").click();
       else if (e.key === "ArrowRight" && cineOn) box.querySelector("#cineNext").click();
+      else if (e.key === "+" || e.key === "=") applyZoom(zoom * 1.25);
+      else if (e.key === "-" || e.key === "_") applyZoom(zoom / 1.25);
+      else if (e.key === "0") box.querySelector("#vreset").click();
+      else if (e.key === "p" || e.key === "P") setPan(!panOn);
     };
     document.addEventListener("keydown", keyh);
     setMode("mpr");
