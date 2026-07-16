@@ -26,6 +26,18 @@ function toast(msg, kind = "") {
 }
 function badge(s) { return `<span class="badge ${s}"><span class="dot"></span>${s}</span>`; }
 function debounce(fn, ms = 280) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+const ENV_FIELDS = [
+  ["host", "Machine"], ["os", "OS"], ["platform", "Platform"], ["cpu", "CPU"],
+  ["physical_cores", "Physical cores"], ["logical_cores", "Logical cores"], ["ram_total_gb", "RAM (GB)"],
+  ["device", "Device"], ["gpu", "GPU"], ["gpu_mem_total_gb", "GPU VRAM (GB)"], ["cuda_version", "CUDA"],
+  ["torch_version", "torch"], ["nnunetv2_version", "nnU-Net"],
+  ["peak_ram_mb", "Peak RAM (MB)"], ["peak_gpu_mb", "Peak VRAM (MB)"],
+  ["convert_seconds", "Convert (s)"], ["predict_seconds", "Predict (s)"], ["total_seconds", "Total (s)"],
+];
+function kvGrid(pairs) {
+  return `<div class="mcard" style="padding:12px 14px"><div class="kv">${pairs.map(p =>
+    `<div class="k">${esc(p[0])}</div><div class="v">${p[1] == null || p[1] === "" ? "—" : esc(p[1])}</div>`).join("")}</div></div>`;
+}
 
 /* ------------------------------------------------------------------- state */
 let VOCAB = [];            // failure-mode vocabulary
@@ -40,6 +52,7 @@ const PAGES = {
   runs: { title: "Runs", sub: "Processing history", fn: renderRuns },
   insights: { title: "QC & Insights", sub: "Failure modes and review status", fn: renderInsights },
   run: { title: "Run", sub: "", fn: renderRunDetail },
+  compare: { title: "Compare runs", sub: "Side-by-side results", fn: renderCompare },
 };
 function parseHash() { const raw = (location.hash || "#/overview").replace(/^#\//, ""); const [view, arg] = raw.split("/"); return { view: view || "overview", arg }; }
 async function route() {
@@ -168,6 +181,7 @@ async function openDataset(id) {
     ${runsTbl}
   `, [
     { label: "New run on this dataset", cls: "primary", fn: () => { closeModal(); openNewRun([id]); } },
+    { label: "Compare runs", fn: () => { if (runs.length < 2) return toast("Need ≥2 runs to compare", "err"); closeModal(); location.hash = "#/compare/" + runs.map(x => x.id).join(","); } },
     { label: "Save", fn: async () => {
         await api("/datasets/" + id, { method: "PATCH", body: JSON.stringify({
           tags: $("#dsTags").value.split(",").map(s => s.trim()).filter(Boolean),
@@ -227,24 +241,33 @@ async function openRegisterModel() {
 /* -------------------------------------------------------------------- runs */
 let runFilters = { status: "", qc_status: "", qc_tag: "" };
 async function renderRuns(preset) {
+  $("#pageActions").innerHTML = `<button class="btn" id="cmpSel">⇄ Compare selected</button>`;
+  $("#cmpSel").onclick = () => {
+    const ids = [...document.querySelectorAll(".rck:checked")].map(x => x.value);
+    if (ids.length < 2) return toast("Tick ≥2 runs to compare", "err");
+    location.hash = "#/compare/" + ids.join(",");
+  };
   const bar = h(`<div class="toolbar">
     <select class="input" id="fstatus"><option value="">All statuses</option>${["queued", "running", "succeeded", "failed", "canceled"].map(s => `<option ${s === runFilters.status ? "selected" : ""}>${s}</option>`).join("")}</select>
     <select class="input" id="fqc"><option value="">All QC</option>${["unreviewed", "pass", "minor", "fail"].map(s => `<option ${s === runFilters.qc_status ? "selected" : ""}>${s}</option>`).join("")}</select>
     <select class="input" id="ftag"><option value="">Any failure mode</option>${VOCAB.map(v => `<option value="${v.key}" ${v.key === runFilters.qc_tag ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select>
     <div class="grow"></div></div>`);
-  const wrap = h(`<div class="panel"><table class="tbl"><thead><tr><th>Run</th><th>Dataset</th><th>Model</th><th>Status</th>
-    <th class="right">ROI volume</th><th class="right">Duration</th><th>QC</th><th>Created</th></tr></thead><tbody id="rrows"></tbody></table></div>`);
+  const wrap = h(`<div class="panel"><table class="tbl"><thead><tr><th style="width:28px"></th><th>Run</th><th>Dataset</th><th>Model</th><th>Status</th>
+    <th class="right">ROI volume</th><th class="right">Duration</th><th>Machine</th><th>QC</th><th>Created</th></tr></thead><tbody id="rrows"></tbody></table></div>`);
   $("#content").innerHTML = ""; $("#content").append(bar, wrap);
   const reload = async () => {
     const p = new URLSearchParams(Object.fromEntries(Object.entries(runFilters).filter(([, v]) => v))).toString();
     const rows = await api("/runs" + (p ? "?" + p : ""));
     $("#rrows").innerHTML = rows.length ? rows.map(r => `
-      <tr onclick="location.hash='#/run/${r.id}'"><td>#${r.id}</td><td>${esc(r.dataset_name || "")}</td>
+      <tr onclick="location.hash='#/run/${r.id}'">
+        <td onclick="event.stopPropagation()"><input type="checkbox" class="rck" value="${r.id}"></td>
+        <td>#${r.id}</td><td>${esc(r.dataset_name || "")}</td>
         <td>${esc(r.model_name || "")} <span class="ver">${esc(r.model_version || "")}</span></td>
         <td>${badge(r.status)}</td><td class="num">${fmtVol(r.roi_mm3)}</td><td class="num">${fmtDur(r.duration_sec)}</td>
+        <td class="muted">${esc(r.host || (r.env || {}).host || "—")}</td>
         <td>${qcPill(r.qc_status)}${r.flagged ? ' <span title="flagged" style="color:var(--amber)">⚑</span>' : ""}</td>
         <td class="muted">${fmtDate(r.created_at)}</td></tr>`).join("")
-      : `<tr><td colspan="8" class="muted" style="padding:22px">No runs match.</td></tr>`;
+      : `<tr><td colspan="10" class="muted" style="padding:22px">No runs match.</td></tr>`;
   };
   $("#fstatus").onchange = e => { runFilters.status = e.target.value; reload(); };
   $("#fqc").onchange = e => { runFilters.qc_status = e.target.value; reload(); };
@@ -257,23 +280,32 @@ async function renderRuns(preset) {
 /* -------------------------------------------------------------- run detail */
 async function renderRunDetail(id) {
   const r = await api("/runs/" + id);
-  $("#pageTitle").innerHTML = `Run #${r.id}`;
+  $("#pageTitle").innerHTML = `Run #${r.id} — report`;
   $("#pageSub").textContent = `${r.dataset_name || ""} • ${r.model_name || ""} ${r.model_version || ""}`;
-  $("#pageActions").innerHTML = `<a class="btn ghost" href="#/runs">← All runs</a>`;
-  const snap = r.model_snapshot || {};
-  const metrics = [
-    ["ROI volume", fmtVol(r.roi_mm3)], ["ROI voxels", fmtInt(r.roi_voxels)],
-    ["ROI (µm³)", fmtUm(r.roi_um3)], ["Duration", fmtDur(r.duration_sec)],
-    ["Device", r.device_used || (r.params && r.params.device) || "—"], ["Best slice", r.best_slice ?? "—"],
+  $("#pageActions").innerHTML =
+    `<button class="btn" id="cmpBtn">⇄ Compare dataset runs</button>
+     <button class="btn" id="expBtn">⭳ Export report</button>
+     <a class="btn ghost" href="#/runs">← All runs</a>`;
+  const snap = r.model_snapshot || {}, env = r.env || {}, p = r.params || {};
+  const summary = [
+    ["Dataset", r.dataset_name], ["Model", r.model_name], ["Version", r.model_version], ["Status", r.status],
+    ["ROI volume", fmtVol(r.roi_mm3)], ["Duration", fmtDur(r.duration_sec)],
+    ["Machine", env.host || r.host || "—"], ["Device", (r.device_used || p.device || "—") + (env.gpu ? " · GPU" : "")],
   ];
+  const metrics = [
+    ["ROI volume", fmtVol(r.roi_mm3)], ["ROI voxels", fmtInt(r.roi_voxels)], ["ROI (µm³)", fmtUm(r.roi_um3)],
+    ["Best slice", r.best_slice ?? "—"], ["Peak RAM", env.peak_ram_mb ? env.peak_ram_mb + " MB" : "—"],
+    ["Model Dice (CV)", snap.cross_val_dice ? Number(snap.cross_val_dice).toFixed(3) : "—"],
+  ];
+  const params = [["Folds", p.folds], ["TTA", p.tta ? "on" : "off"], ["Step", p.step],
+    ["Device", p.device], ["Spacing (mm)", p.spacing_mm], ["Pattern", p.pattern], ["Fingerprint", snap.fingerprint]];
+  const envPairs = ENV_FIELDS.filter(f => env[f[0]] != null).map(f => [f[1], env[f[0]]]);
   $("#content").innerHTML = `
-    <div class="flex" style="margin-bottom:14px">${badge(r.status)}
-      <span class="ver">${esc(r.model_version || "")}</span>
-      <span class="chip mono" title="model fingerprint">fp ${esc(snap.fingerprint || "—")}</span>
-      <span class="chip">folds ${esc((r.params || {}).folds ?? "")}</span>
-      <span class="chip">step ${esc((r.params || {}).step ?? "")}</span>
-      <span class="chip">${(r.params || {}).tta ? "TTA on" : "TTA off"}</span></div>
-    <div class="rd">
+    <div class="panel"><div class="phead"><h3>Summary</h3>${badge(r.status)}</div>
+      <div class="pbody"><div class="metrics" style="grid-template-columns:repeat(4,1fr)">
+        ${summary.map(s => `<div class="metric"><div class="k">${s[0]}</div><div class="v" style="font-size:15px">${esc(s[1] ?? "—")}</div></div>`).join("")}
+      </div></div></div>
+    <div class="rd" style="margin-top:16px">
       <div>
         <div class="viewer" id="viewer"><div class="vfallback"><span class="spin"></span> preparing viewer…</div></div>
         <div class="panel" style="margin-top:14px"><div class="phead"><h3>Run log</h3>
@@ -281,12 +313,22 @@ async function renderRunDetail(id) {
           <div class="pbody"><div class="logbox" id="log">loading…</div></div></div>
       </div>
       <div>
-        <div class="metrics">${metrics.map(m => `<div class="metric"><div class="k">${m[0]}</div><div class="v">${m[1]}</div></div>`).join("")}</div>
+        <div class="panel"><div class="phead"><h3>Segmentation metrics</h3></div>
+          <div class="pbody"><div class="metrics">${metrics.map(m => `<div class="metric"><div class="k">${m[0]}</div><div class="v">${esc(m[1])}</div></div>`).join("")}</div></div></div>
+        <div class="panel" style="margin-top:14px"><div class="phead"><h3>Parameters</h3></div><div class="pbody">${kvGrid(params)}</div></div>
+        <div class="panel" style="margin-top:14px"><div class="phead"><h3>Run environment — debrief</h3>${env.gpu ? `<span class="chip accent">${esc(env.gpu)}</span>` : `<span class="chip">CPU</span>`}</div>
+          <div class="pbody">${envPairs.length ? kvGrid(envPairs) : `<div class="muted">The full machine/hardware debrief (CPU, RAM, GPU, versions, peak memory, per-phase timings) is captured automatically when the run executes.</div>`}</div></div>
         <div class="panel" style="margin-top:14px" id="qcPanel"></div>
       </div>
     </div>`;
   loadLog(id);
   $("#reloadLog").onclick = () => loadLog(id);
+  $("#expBtn").onclick = () => exportReport(r);
+  $("#cmpBtn").onclick = async () => {
+    const runs = await api("/runs?dataset_id=" + r.dataset_id);
+    if (runs.length < 2) return toast("Need ≥2 runs on this dataset to compare", "err");
+    location.hash = "#/compare/" + runs.map(x => x.id).join(",");
+  };
   renderQC(r);
   if (r.status === "succeeded") mountViewer(id);
   else if (r.status === "running" || r.status === "queued") {
@@ -299,6 +341,63 @@ async function renderRunDetail(id) {
   } else {
     $("#viewer").innerHTML = `<div class="vfallback"><div class="big" style="font-size:32px">⚠</div>${r.status}. See log below.<br><span class="muted">${esc(r.error || "")}</span></div>`;
   }
+}
+
+function exportReport(r) {
+  const env = r.env || {}, p = r.params || {}, snap = r.model_snapshot || {};
+  const L = [`# Run #${r.id} — ${r.dataset_name || ""}`, "", "## Summary",
+    `- Dataset: ${r.dataset_name || ""}`,
+    `- Model: ${r.model_name || ""} (${r.model_version || ""}) · fingerprint ${snap.fingerprint || "—"}`,
+    `- Status: ${r.status}`,
+    `- ROI volume: ${fmtVol(r.roi_mm3)} (${fmtInt(r.roi_voxels)} voxels · ${fmtUm(r.roi_um3)})`,
+    `- Duration: ${fmtDur(r.duration_sec)}`,
+    `- Machine: ${env.host || r.host || "—"} · device ${r.device_used || p.device || "—"}${env.gpu ? " · " + env.gpu : ""}`,
+    "", "## Parameters", ...Object.entries(p).map(([k, v]) => `- ${k}: ${v}`),
+    "", "## Environment (debrief)", ...Object.entries(env).map(([k, v]) => `- ${k}: ${v}`),
+    "", "## QC & failure modes",
+    `- Outcome: ${r.qc_status}`,
+    `- Failure modes: ${(r.qc_tags || []).join(", ") || "none"}`,
+    `- Flagged for retraining: ${r.flagged ? "yes" : "no"}`,
+    r.review_note ? `- Note: ${r.review_note}` : ""];
+  const blob = new Blob([L.join("\n")], { type: "text/markdown" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = `run_${r.id}_report.md`; a.click();
+  toast("Report exported", "ok");
+}
+
+async function renderCompare(arg) {
+  const ids = (arg || "").split(",").map(x => +x).filter(Boolean);
+  if (ids.length < 2) { $("#content").innerHTML = `<div class="empty"><div class="big">⇄</div>Pick 2+ runs to compare — from a dataset's runs or the Runs page.</div>`; return; }
+  const runs = await Promise.all(ids.map(i => api("/runs/" + i)));
+  $("#pageSub").textContent = runs.map(r => "#" + r.id).join("  vs  ");
+  $("#pageActions").innerHTML = `<a class="btn ghost" href="#/runs">← All runs</a>`;
+  const base = runs[0].roi_mm3;
+  const previews = runs.map(r => `<div style="flex:1;min-width:210px">
+    <div class="flex" style="justify-content:space-between;margin-bottom:6px"><b>#${r.id}</b><span class="ver">${esc(r.model_version || "")}</span></div>
+    ${r.status === "succeeded" ? `<img src="/api/runs/${r.id}/preview.png" style="width:100%;border-radius:8px;border:1px solid var(--border);background:#05070a">`
+      : `<div class="viewer" style="min-height:150px"><div class="vfallback">${r.status}</div></div>`}
+    <div class="mono" style="margin-top:6px">${fmtVol(r.roi_mm3)}${base && r.roi_mm3 && r !== runs[0]
+      ? ` <span style="color:${r.roi_mm3 >= base ? "var(--green)" : "var(--red)"}">(${((r.roi_mm3 - base) / base * 100).toFixed(1)}%)</span>` : ""}</div>
+    <a class="btn sm ghost" href="#/run/${r.id}" style="margin-top:6px">Open report</a></div>`).join("");
+  const rows = [
+    ["Model", r => `${esc(r.model_name || "")} <span class="ver">${esc(r.model_version || "")}</span>`],
+    ["Fingerprint", r => `<span class="mono" style="font-size:11px">${esc((r.model_snapshot || {}).fingerprint || "—")}</span>`],
+    ["Status", r => badge(r.status)],
+    ["ROI volume", r => fmtVol(r.roi_mm3)], ["ROI voxels", r => fmtInt(r.roi_voxels)],
+    ["Duration", r => fmtDur(r.duration_sec)],
+    ["Machine", r => esc((r.env || {}).host || r.host || "—")],
+    ["Device", r => esc(r.device_used || (r.params || {}).device || "—")],
+    ["GPU", r => esc((r.env || {}).gpu || "—")],
+    ["Peak RAM (MB)", r => esc((r.env || {}).peak_ram_mb ?? "—")],
+    ["Folds", r => esc((r.params || {}).folds ?? "—")], ["TTA", r => (r.params || {}).tta ? "on" : "off"],
+    ["QC", r => qcPill(r.qc_status)], ["Failure modes", r => esc((r.qc_tags || []).join(", ") || "—")],
+  ];
+  $("#content").innerHTML = `
+    <div class="panel"><div class="phead"><h3>Previews</h3><span class="muted">Δ ROI vs #${runs[0].id}</span></div>
+      <div class="pbody"><div class="wrap" style="align-items:flex-start">${previews}</div></div></div>
+    <div class="panel" style="margin-top:16px"><div class="phead"><h3>Metric comparison</h3></div>
+      <table class="tbl"><thead><tr><th>Metric</th>${runs.map(r => `<th>#${r.id}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map(row => `<tr style="cursor:default"><td class="muted">${row[0]}</td>${runs.map(r => `<td>${row[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 async function loadLog(id) { try { const t = await api("/runs/" + id + "/log.txt"); const box = $("#log"); if (box) { box.textContent = t; box.scrollTop = box.scrollHeight; } } catch { } }
 

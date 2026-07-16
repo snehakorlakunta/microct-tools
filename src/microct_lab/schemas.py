@@ -74,6 +74,12 @@ class RunOut(BaseModel):
     roi_mm3: Optional[float] = None
     roi_um3: Optional[float] = None
     best_slice: Optional[int] = None
+    env: dict = {}
+    host: Optional[str] = None
+    gpu: Optional[str] = None
+    peak_ram_mb: Optional[float] = None
+    peak_gpu_mb: Optional[float] = None
+    torch_version: Optional[str] = None
     error: Optional[str] = None
     qc_status: str = "unreviewed"
     qc_tags: list = []

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from .config import settings
 from .database import SessionLocal, init_db
 from .models import Dataset, Model, Run
+from .sysinfo import host_info
 
 
 def _claim_next(db) -> Run | None:
@@ -49,6 +50,9 @@ def _execute(db, run: Run) -> None:
     out.mkdir(parents=True, exist_ok=True)
     log_path = out / "run.log"
     run.log_path = str(log_path)
+    # Record where this run executed up front, so even a failed run is traceable.
+    run.env = host_info()
+    run.host = run.env.get("host")
     db.commit()
 
     p = run.params
@@ -81,6 +85,14 @@ def _execute(db, run: Run) -> None:
         run.roi_um3 = r.get("roi_um3")
         run.best_slice = r.get("best_slice")
         run.device_used = r.get("device")
+        # Merge the compute-side debrief (GPU, versions, peak memory, timings).
+        rec = dict(run.env or {})
+        rec.update(r.get("environment", {}))
+        run.env = rec
+        run.gpu = rec.get("gpu")
+        run.peak_ram_mb = rec.get("peak_ram_mb")
+        run.peak_gpu_mb = rec.get("peak_gpu_mb")
+        run.torch_version = rec.get("torch_version")
         run.input_nii = str(out / f"{case}_0000.nii.gz")
         run.mask_nii = str(out / f"{case}.nii.gz")
         run.preview_png = str(out / f"{case}_preview.png")

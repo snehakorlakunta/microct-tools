@@ -97,6 +97,14 @@ class Run(Base):
     roi_um3: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     best_slice: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Full environment debrief: host, OS, CPU, RAM, GPU, versions, peak memory, timings.
+    env: Mapped[dict] = mapped_column(JSON, default=dict)
+    host: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    gpu: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    peak_ram_mb: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    peak_gpu_mb: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    torch_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
     output_dir: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     input_nii: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     mask_nii: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)

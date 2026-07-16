@@ -115,6 +115,50 @@ def make_preview(gray, seg, out_png):
     return z
 
 
+def capture_env(dev, torch, timings):
+    """Full run debrief: host, CPU/RAM, GPU, versions, peak memory, timings."""
+    import platform, socket, os as _os
+    env = {
+        "host": socket.gethostname(),
+        "platform": platform.platform(),
+        "os": platform.system(),
+        "python": platform.python_version(),
+        "cpu": platform.processor() or platform.machine(),
+        "logical_cores": _os.cpu_count(),
+        "device": dev,
+        "torch_version": getattr(torch, "__version__", None),
+    }
+    try:
+        import psutil
+        env["physical_cores"] = psutil.cpu_count(logical=False)
+        env["ram_total_gb"] = round(psutil.virtual_memory().total / 1e9, 1)
+        mi = psutil.Process().memory_info()
+        env["peak_ram_mb"] = round(getattr(mi, "peak_wset", getattr(mi, "rss", 0)) / 1e6, 1)
+    except Exception:
+        try:
+            import resource
+            env["peak_ram_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1)
+        except Exception:
+            pass
+    try:
+        import nnunetv2
+        env["nnunetv2_version"] = getattr(nnunetv2, "__version__", "?")
+    except Exception:
+        pass
+    try:
+        if dev == "cuda" and torch.cuda.is_available():
+            p = torch.cuda.get_device_properties(0)
+            env["gpu"] = torch.cuda.get_device_name(0)
+            env["gpu_count"] = torch.cuda.device_count()
+            env["gpu_mem_total_gb"] = round(p.total_memory / 1e9, 1)
+            env["cuda_version"] = torch.version.cuda
+            env["peak_gpu_mb"] = round(torch.cuda.max_memory_allocated() / 1e6, 1)
+    except Exception:
+        pass
+    env.update(timings)
+    return env
+
+
 def main():
     ap = argparse.ArgumentParser(description="microCT stack -> nnU-Net segmentation",
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -151,7 +195,9 @@ def main():
         torch.set_num_threads(os.cpu_count() or 8)
 
     # 1) convert
+    _tc = time.time()
     stack_to_nifti(args.slices, args.pattern, args.spacing, in_nii)
+    conv_sec = time.time() - _tc
 
     # 2) predict
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
@@ -166,6 +212,9 @@ def main():
 
     rw = SimpleITKIO()
     img, props = rw.read_images([in_nii])
+    if dev == "cuda":
+        try: torch.cuda.reset_peak_memory_stats()
+        except Exception: pass
     t0 = time.time()
     seg = predictor.predict_single_npy_array(img, props, None, None, False)
     dt = time.time() - t0
@@ -177,10 +226,13 @@ def main():
     n = int((seg == 1).sum())
     vox_mm3 = args.spacing ** 3
     z = make_preview(img[0], seg, os.path.join(args.out, f"{case}_preview.png"))
+    timings = {"convert_seconds": round(conv_sec, 1), "predict_seconds": round(dt, 1),
+               "total_seconds": round(conv_sec + dt, 1)}
     result = {"case": case, "device": dev, "roi_voxels": n,
               "roi_mm3": round(n * vox_mm3, 6), "roi_um3": round(n * vox_mm3 * 1e9, 1),
               "seg_shape": list(seg.shape), "best_slice": z,
-              "predict_seconds": round(dt, 1), "folds": args.folds, "tta": args.tta}
+              "predict_seconds": round(dt, 1), "folds": args.folds, "tta": args.tta,
+              "environment": capture_env(dev, torch, timings)}
     json.dump(result, open(os.path.join(args.out, f"{case}_result.json"), "w"), indent=2)
     log(f"[result] {case}: ROI = {n:,} voxels = {n*vox_mm3:.4f} mm^3 "
         f"({n*vox_mm3*1e9:,.0f} um^3)")
