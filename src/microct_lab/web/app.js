@@ -53,22 +53,49 @@ const PANEL_TITLES = {
   summary: "Summary", viewer: "Viewer", metrics: "Segmentation metrics",
   parameters: "Parameters", environment: "Run environment", qc: "QC & failure modes", log: "Run log",
 };
-let panelPinned = new Set(PANEL_KEYS);   // persisted: shown on load
-let panelShown = new Set(PANEL_KEYS);    // current session
+let panelShown = new Set(PANEL_KEYS);     // persisted: which panels are visible
+let panelCollapsed = new Set();           // persisted: which cards are collapsed
 function loadLayout() {
-  try { const p = JSON.parse(localStorage.getItem("mlab_pinned")); if (Array.isArray(p)) panelPinned = new Set(p); } catch { }
-  panelShown = new Set(panelPinned);
+  try { const s = JSON.parse(localStorage.getItem("mlab_shown")); panelShown = Array.isArray(s) ? new Set(s) : new Set(PANEL_KEYS); } catch { panelShown = new Set(PANEL_KEYS); }
+  try { const c = JSON.parse(localStorage.getItem("mlab_collapsed")); panelCollapsed = Array.isArray(c) ? new Set(c) : new Set(); } catch { panelCollapsed = new Set(); }
 }
-function savePinned() { try { localStorage.setItem("mlab_pinned", JSON.stringify([...panelPinned])); } catch { } }
-function wrapPanel(key, headExtra, bodyHtml, flush) {
-  const pinned = panelPinned.has(key);
-  return `<div class="panel rpanel" data-panel="${key}">
+function saveShown() { try { localStorage.setItem("mlab_shown", JSON.stringify([...panelShown])); } catch { } }
+function saveCollapsed() { try { localStorage.setItem("mlab_collapsed", JSON.stringify([...panelCollapsed])); } catch { } }
+function wrapCard(key, headExtra, bodyHtml, opts = {}) {
+  const canCollapse = opts.collapsible !== false;
+  const collapsed = canCollapse && panelCollapsed.has(key);
+  const chev = canCollapse ? `<button class="pico" data-collapse="${key}" title="${collapsed ? "expand" : "collapse"}">${collapsed ? "▸" : "▾"}</button>` : "";
+  return `<div class="panel rpanel ${collapsed ? "collapsed" : ""}" data-panel="${key}">
     <div class="phead"><h3>${PANEL_TITLES[key]}</h3>
-      <div class="pctl">${headExtra || ""}
-        <button class="pico ${pinned ? "on" : ""}" data-pin="${key}" title="${pinned ? "pinned — stays on reload" : "pin to keep on reload"}">${pinned ? "★" : "☆"}</button>
+      <div class="pctl">${headExtra || ""}${chev}
         <button class="pico" data-close="${key}" title="hide panel">✕</button>
       </div></div>
-    <div class="pbody"${flush ? ' style="padding:0"' : ""}>${bodyHtml}</div></div>`;
+    <div class="pbody"${opts.flush ? ' style="padding:0"' : ""}>${bodyHtml}</div></div>`;
+}
+function initSplitter() {
+  const sp = document.getElementById("splitter");
+  const side = document.getElementById("repSide");
+  const cont = document.querySelector(".report-split");
+  if (!sp || !side || !cont) return;
+  sp.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    document.body.style.userSelect = "none";
+    const rect = cont.getBoundingClientRect();
+    const mm = (ev) => {
+      let w = rect.right - ev.clientX;
+      w = Math.max(280, Math.min(rect.width - 300, w));
+      side.style.width = w + "px";
+    };
+    const mu = () => {
+      document.removeEventListener("mousemove", mm);
+      document.removeEventListener("mouseup", mu);
+      document.body.style.userSelect = "";
+      try { localStorage.setItem("mlab_sidew", parseInt(side.style.width) || 400); } catch { }
+      const nv = window.__nv; if (nv) { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }
+    };
+    document.addEventListener("mousemove", mm);
+    document.addEventListener("mouseup", mu);
+  });
 }
 
 /* ------------------------------------------------------------------ router */
@@ -336,33 +363,47 @@ async function renderRunDetail(id) {
   const chips = PANEL_KEYS.map(k => `<button class="pchip ${panelShown.has(k) ? "on" : ""}" data-toggle="${k}">${PANEL_TITLES[k]}</button>`).join("");
   const bar = `<div class="panelbar"><span class="muted" style="font-size:12px">Panels</span>${chips}<div class="grow"></div><button class="pchip" id="resetLayout">Reset layout</button></div>`;
 
-  const top = panelShown.has("summary") ? wrapPanel("summary", badge(r.status), summaryBody) : "";
-  const left = [], side = [];
-  if (panelShown.has("viewer")) left.push(wrapPanel("viewer", "", `<div class="viewer" id="viewer"><div class="vfallback"><span class="spin"></span> preparing viewer…</div></div>`, true));
-  if (panelShown.has("log")) left.push(wrapPanel("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log">loading…</div>`));
-  if (panelShown.has("metrics")) side.push(wrapPanel("metrics", "", metricsBody));
-  if (panelShown.has("parameters")) side.push(wrapPanel("parameters", "", kvGrid(params)));
-  if (panelShown.has("environment")) side.push(wrapPanel("environment", env.gpu ? `<span class="chip accent">${esc(env.gpu)}</span>` : `<span class="chip">CPU</span>`, envBody));
-  if (panelShown.has("qc")) side.push(wrapPanel("qc", "", `<div id="qcInner"></div>`));
+  // left column = viewer (fills); right column = stacked, collapsible cards
+  const leftHtml = panelShown.has("viewer")
+    ? wrapCard("viewer", "", `<div class="viewer" id="viewer"><div class="vfallback"><span class="spin"></span> preparing viewer…</div></div>`, { flush: true, collapsible: false })
+    : "";
+  const right = [];
+  if (panelShown.has("summary")) right.push(wrapCard("summary", badge(r.status), summaryBody));
+  if (panelShown.has("metrics")) right.push(wrapCard("metrics", "", metricsBody));
+  if (panelShown.has("parameters")) right.push(wrapCard("parameters", "", kvGrid(params)));
+  if (panelShown.has("environment")) right.push(wrapCard("environment", env.gpu ? `<span class="chip accent">${esc(env.gpu)}</span>` : `<span class="chip">CPU</span>`, envBody));
+  if (panelShown.has("qc")) right.push(wrapCard("qc", "", `<div id="qcInner"></div>`));
+  if (panelShown.has("log")) right.push(wrapCard("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log">loading…</div>`));
 
-  $("#content").innerHTML = bar + top +
-    `<div class="report-main">
-       <div class="report-left" id="repLeft">${left.join("")}</div>
-       <div class="report-side" id="repSide">${side.join("")}</div>
+  const hasLeft = !!leftHtml, hasRight = right.length > 0;
+  const sideW = Math.max(280, parseInt(localStorage.getItem("mlab_sidew")) || 400);
+  $("#content").innerHTML = bar +
+    `<div class="report-split">
+       <div class="report-left" id="repLeft"${hasLeft ? "" : ' style="display:none"'}>${leftHtml}</div>
+       <div class="splitter" id="splitter"${hasLeft && hasRight ? "" : ' style="display:none"'}></div>
+       <div class="report-side" id="repSide" style="${hasLeft ? `width:${sideW}px` : "flex:1"}${hasRight ? "" : ";display:none"}">${right.join("")}</div>
      </div>`;
-  if (!side.length) $("#repSide").style.display = "none";
-  if (!left.length) $("#repLeft").style.display = "none";
 
+  // panel toggle chips (persisted) -> rebuild
   $("#content").querySelectorAll(".pchip[data-toggle]").forEach(b => b.onclick = () => {
-    const k = b.dataset.toggle; panelShown.has(k) ? panelShown.delete(k) : panelShown.add(k); renderRunDetail(id);
+    const k = b.dataset.toggle; panelShown.has(k) ? panelShown.delete(k) : panelShown.add(k); saveShown(); renderRunDetail(id);
   });
+  // hide (persisted) -> rebuild
   $("#content").querySelectorAll("[data-close]").forEach(b => b.onclick = () => {
-    const k = b.dataset.close; panelShown.delete(k); panelPinned.delete(k); savePinned(); renderRunDetail(id);
+    panelShown.delete(b.dataset.close); saveShown(); renderRunDetail(id);
   });
-  $("#content").querySelectorAll("[data-pin]").forEach(b => b.onclick = () => {
-    const k = b.dataset.pin; if (panelPinned.has(k)) panelPinned.delete(k); else { panelPinned.add(k); panelShown.add(k); } savePinned(); renderRunDetail(id);
+  // collapse/expand (persisted) -> in place, keeps the viewer alive
+  $("#content").querySelectorAll("[data-collapse]").forEach(b => b.onclick = () => {
+    const k = b.dataset.collapse, card = b.closest(".panel");
+    const c = card.classList.toggle("collapsed");
+    c ? panelCollapsed.add(k) : panelCollapsed.delete(k);
+    b.textContent = c ? "▸" : "▾"; b.title = c ? "expand" : "collapse"; saveCollapsed();
   });
-  $("#resetLayout").onclick = () => { panelPinned = new Set(PANEL_KEYS); panelShown = new Set(PANEL_KEYS); savePinned(); renderRunDetail(id); };
+  $("#resetLayout").onclick = () => {
+    panelShown = new Set(PANEL_KEYS); panelCollapsed = new Set();
+    saveShown(); saveCollapsed(); try { localStorage.removeItem("mlab_sidew"); } catch { } renderRunDetail(id);
+  };
+  initSplitter();
   $("#expBtn").onclick = () => exportReport(r);
   $("#cmpBtn").onclick = async () => {
     const runs = await api("/runs?dataset_id=" + r.dataset_id);

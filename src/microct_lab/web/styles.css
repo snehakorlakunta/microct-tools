@@ -216,10 +216,13 @@ input[type=range]{accent-color:var(--accent)}
   padding:4px 11px;font-size:12px;font-weight:600;cursor:pointer}
 .pchip:hover{border-color:#48566a;color:var(--text)}
 .pchip.on{background:#12203a;border-color:#25406e;color:var(--accent)}
-.report-main{display:flex;gap:16px;align-items:flex-start}
-.report-left{flex:1;min-width:0;display:flex;flex-direction:column;gap:14px}
-.report-side{flex:0 0 380px;display:flex;flex-direction:column;gap:14px}
-@media(max-width:940px){.report-main{flex-direction:column}.report-side{flex:1 1 auto;width:100%}}
+.report-split{display:flex;align-items:stretch}
+.report-left{flex:1;min-width:240px;display:flex;flex-direction:column;gap:14px}
+.splitter{flex:0 0 12px;cursor:col-resize;position:relative;align-self:stretch}
+.splitter::before{content:"";position:absolute;left:5px;top:0;bottom:0;width:2px;background:var(--border);border-radius:2px;transition:.12s}
+.splitter:hover::before{background:var(--accent);width:3px;left:4px}
+.report-side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.panel.collapsed .pbody{display:none}
 .pctl{display:flex;align-items:center;gap:6px}
 .pico{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:1px solid transparent;
   background:transparent;color:var(--muted);border-radius:6px;cursor:pointer;font-size:13px;line-height:1}
