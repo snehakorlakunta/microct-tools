@@ -207,6 +207,10 @@ function dsCard(d) {
         <span class="mono">${d.width ? `${d.width}×${d.height}×${d.slices || "?"}` : (d.slices || "?") + " sl"}</span>
       </div>
       <div class="meta"><span>${esc(d.scanner || "")}</span><span>${esc(d.scan_date || "")}</span></div>
+      <div class="wrap" style="margin-top:9px">
+        <button class="btn sm" onclick="event.stopPropagation();location.hash='#/dataset/${d.id}'" title="View the raw scan">◉ Visualize</button>
+        <button class="btn sm ghost" onclick="event.stopPropagation();openNewRun([${d.id}])" title="Segment this dataset">▶ Run</button>
+      </div>
     </div></div>`;
 }
 async function doIngest() {
