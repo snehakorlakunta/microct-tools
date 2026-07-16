@@ -42,7 +42,10 @@ function kvGrid(pairs) {
 /* ------------------------------------------------------------------- state */
 let VOCAB = [];            // failure-mode vocabulary
 let pollTimer = null;
-const clearPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
+const clearPoll = () => {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (window.__cine) { clearInterval(window.__cine); window.__cine = null; }
+};
 
 /* ------------------------------------------------------------------ router */
 const PAGES = {
@@ -438,6 +441,14 @@ async function mountViewer(id) {
       <button class="btn sm" id="vreset" title="reset view">⟲ Reset</button>
       <button class="btn sm" id="vmax" title="maximize (F)">⤢ Maximize</button>
       <a class="btn sm ghost" href="/api/runs/${id}/mask.nii.gz" download>⭳ mask</a>
+    </div>
+    <div class="vctrl cine" id="cinebar" style="display:none">
+      <button class="btn sm" id="cinePrev" title="previous slice (←)">⏮</button>
+      <button class="btn sm primary" id="cinePlay" title="play/pause (space)">▶ Play</button>
+      <button class="btn sm" id="cineNext" title="next slice (→)">⏭</button>
+      <input type="range" id="cineSlider" min="0" max="0" value="0" style="flex:1;min-width:120px">
+      <span class="muted mono" id="cineLabel" style="min-width:64px;text-align:right">–</span>
+      <label class="muted" style="font-size:11px">fps <select id="cineFps" class="input" style="padding:3px 6px"><option>6</option><option selected>12</option><option>20</option><option>30</option></select></label>
     </div>`;
   try {
     const nv = new mod.Niivue({ backColor: [0.02, 0.03, 0.05, 1], show3Dcrosshair: true, crosshairColor: [1, 0.6, 0, 0.6] });
@@ -449,14 +460,47 @@ async function mountViewer(id) {
     ]);
     window.__nv = nv;
     const SL = { mpr: nv.sliceTypeMultiplanar, ax: nv.sliceTypeAxial, cor: nv.sliceTypeCoronal, sag: nv.sliceTypeSagittal, "3d": nv.sliceTypeRender };
-    let az = 180, el = 15;
+    let az = 180, el = 15, cur = "mpr", idx = 0;
+    const stopCine = () => {
+      if (window.__cine) { clearInterval(window.__cine); window.__cine = null; }
+      const pb = box.querySelector("#cinePlay"); if (pb) pb.innerHTML = "▶ Play";
+    };
+    const axisInfo = (m) => {
+      const d = (nv.volumes[0] && nv.volumes[0].dims) || [3, 1, 1, 1];
+      if (m === "ax") return { i: 2, n: d[3] };   // step along k
+      if (m === "cor") return { i: 1, n: d[2] };  // step along j
+      if (m === "sag") return { i: 0, n: d[1] };  // step along i
+      return null;
+    };
+    const gotoSlice = (ai, i) => {
+      i = ((i % ai.n) + ai.n) % ai.n;
+      try {
+        const p = (nv.scene && nv.scene.crosshairPos) ? Array.from(nv.scene.crosshairPos) : [0.5, 0.5, 0.5];
+        p[ai.i] = (i + 0.5) / ai.n; nv.scene.crosshairPos = p; nv.drawScene();
+      } catch (e) { }
+      return i;
+    };
+    const setSlice = (i) => {
+      const ai = axisInfo(cur); if (!ai) return;
+      idx = gotoSlice(ai, i);
+      box.querySelector("#cineSlider").value = idx;
+      box.querySelector("#cineLabel").textContent = `${idx + 1} / ${ai.n}`;
+    };
+    const updateCine = (m) => {
+      const bar = box.querySelector("#cinebar"), ai = axisInfo(m);
+      if (!ai) { stopCine(); bar.style.display = "none"; return; }
+      bar.style.display = "flex";
+      const sl = box.querySelector("#cineSlider"); sl.max = ai.n - 1;
+      idx = Math.min(idx, ai.n - 1); setSlice(idx);
+    };
     const setMode = (m) => {
+      cur = m; stopCine();
       try { nv.setSliceType(SL[m]); } catch { }
       box.querySelectorAll("#vmodes .btn").forEach(b => b.classList.toggle("primary", b.dataset.m === m));
       const rot = box.querySelector("#vrot"); if (rot) rot.style.display = m === "3d" ? "inline-flex" : "none";
+      updateCine(m);
     };
     box.querySelectorAll("#vmodes .btn").forEach(b => b.onclick = () => setMode(b.dataset.m));
-    setMode("mpr");
     box.querySelector("#op").oninput = e => { try { nv.setOpacity(1, +e.target.value); } catch { } };
     box.querySelectorAll("#vrot [data-r]").forEach(b => b.onclick = () => {
       const d = b.dataset.r;
@@ -465,6 +509,18 @@ async function mountViewer(id) {
       try { nv.setRenderAzimuthElevation(az, el); } catch { }
     });
     box.querySelector("#vreset").onclick = () => { az = 180; el = 15; try { nv.setRenderAzimuthElevation(az, el); } catch { } setMode("mpr"); };
+    box.querySelector("#cinePrev").onclick = () => { stopCine(); setSlice(idx - 1); };
+    box.querySelector("#cineNext").onclick = () => { stopCine(); setSlice(idx + 1); };
+    box.querySelector("#cineSlider").oninput = e => { stopCine(); setSlice(+e.target.value); };
+    box.querySelector("#cinePlay").onclick = () => {
+      if (window.__cine) { stopCine(); return; }
+      const fps = +box.querySelector("#cineFps").value || 12;
+      box.querySelector("#cinePlay").innerHTML = "⏸ Pause";
+      window.__cine = setInterval(() => {
+        if (!document.getElementById("gl")) { stopCine(); return; }
+        setSlice(idx + 1);
+      }, 1000 / fps);
+    };
     const toggleMax = () => {
       const on = box.classList.toggle("vmax");
       box.querySelector("#vmax").innerHTML = on ? "⤡ Restore" : "⤢ Maximize";
@@ -475,10 +531,15 @@ async function mountViewer(id) {
     const keyh = (e) => {
       if (!document.getElementById("gl")) { document.removeEventListener("keydown", keyh); return; }
       if (e.target && /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+      const cineOn = box.querySelector("#cinebar").style.display !== "none";
       if (e.key === "f" || e.key === "F") toggleMax();
       else if (e.key === "Escape" && box.classList.contains("vmax")) toggleMax();
+      else if (e.key === " " && cineOn) { e.preventDefault(); box.querySelector("#cinePlay").click(); }
+      else if (e.key === "ArrowLeft" && cineOn) box.querySelector("#cinePrev").click();
+      else if (e.key === "ArrowRight" && cineOn) box.querySelector("#cineNext").click();
     };
     document.addEventListener("keydown", keyh);
+    setMode("mpr");
   } catch (e) {
     box.innerHTML = `<div class="vfallback"><img src="/api/runs/${id}/preview.png"><div class="muted">Viewer error: ${esc(e.message)}</div></div>`;
   }
