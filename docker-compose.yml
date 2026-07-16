@@ -1,0 +1,27 @@
+# Runs the dashboard + worker. Bind-mount your external data/results/models.
+# The worker here has no GPU/torch by default — for real segmentation, run the
+# worker on a GPU host (see README) or extend the image with the [seg] extra.
+services:
+  web:
+    build: .
+    command: microct-web
+    ports: ["8000:8000"]
+    environment:
+      MICROCT_DATA_ROOT: /data/datasets
+      MICROCT_RESULTS_ROOT: /data/results
+      MICROCT_MODELS_ROOT: /data/models
+      MICROCT_STATE_DIR: /data/state
+    volumes:
+      - ./_stack:/data        # <-- point this at your external storage
+
+  worker:
+    build: .
+    command: microct-worker
+    environment:
+      MICROCT_DATA_ROOT: /data/datasets
+      MICROCT_RESULTS_ROOT: /data/results
+      MICROCT_MODELS_ROOT: /data/models
+      MICROCT_STATE_DIR: /data/state
+    volumes:
+      - ./_stack:/data
+    # For GPU: use an NVIDIA base image + deploy.resources.reservations.devices

@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# --- Environment / secrets ---
+.env
+
+# --- Data, results, models, registry DB live OUTSIDE the repo ---
+# These are here only as a safety net in case someone points paths inside the repo.
+/data/
+/results/
+/models/
+/state/
+*.db
+*.sqlite
+*.sqlite3
+thumbnails/
+
+# --- Large imaging files should never be committed ---
+*.nii
+*.nii.gz
+*.bmp
+*.tif
+*.tiff
+*.pth
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
