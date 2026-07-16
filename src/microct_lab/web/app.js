@@ -47,6 +47,30 @@ const clearPoll = () => {
   if (window.__cine) { clearInterval(window.__cine); window.__cine = null; }
 };
 
+// ---- configurable run-report panels (persisted) ----
+const PANEL_KEYS = ["summary", "viewer", "metrics", "parameters", "environment", "qc", "log"];
+const PANEL_TITLES = {
+  summary: "Summary", viewer: "Viewer", metrics: "Segmentation metrics",
+  parameters: "Parameters", environment: "Run environment", qc: "QC & failure modes", log: "Run log",
+};
+let panelPinned = new Set(PANEL_KEYS);   // persisted: shown on load
+let panelShown = new Set(PANEL_KEYS);    // current session
+function loadLayout() {
+  try { const p = JSON.parse(localStorage.getItem("mlab_pinned")); if (Array.isArray(p)) panelPinned = new Set(p); } catch { }
+  panelShown = new Set(panelPinned);
+}
+function savePinned() { try { localStorage.setItem("mlab_pinned", JSON.stringify([...panelPinned])); } catch { } }
+function wrapPanel(key, headExtra, bodyHtml, flush) {
+  const pinned = panelPinned.has(key);
+  return `<div class="panel rpanel" data-panel="${key}">
+    <div class="phead"><h3>${PANEL_TITLES[key]}</h3>
+      <div class="pctl">${headExtra || ""}
+        <button class="pico ${pinned ? "on" : ""}" data-pin="${key}" title="${pinned ? "pinned — stays on reload" : "pin to keep on reload"}">${pinned ? "★" : "☆"}</button>
+        <button class="pico" data-close="${key}" title="hide panel">✕</button>
+      </div></div>
+    <div class="pbody"${flush ? ' style="padding:0"' : ""}>${bodyHtml}</div></div>`;
+}
+
 /* ------------------------------------------------------------------ router */
 const PAGES = {
   overview: { title: "Overview", sub: "Your segmentation registry at a glance", fn: renderOverview },
@@ -303,46 +327,63 @@ async function renderRunDetail(id) {
   const params = [["Folds", p.folds], ["TTA", p.tta ? "on" : "off"], ["Step", p.step],
     ["Device", p.device], ["Spacing (mm)", p.spacing_mm], ["Pattern", p.pattern], ["Fingerprint", snap.fingerprint]];
   const envPairs = ENV_FIELDS.filter(f => env[f[0]] != null).map(f => [f[1], env[f[0]]]);
-  $("#content").innerHTML = `
-    <div class="panel"><div class="phead"><h3>Summary</h3>${badge(r.status)}</div>
-      <div class="pbody"><div class="metrics" style="grid-template-columns:repeat(4,1fr)">
-        ${summary.map(s => `<div class="metric"><div class="k">${s[0]}</div><div class="v" style="font-size:15px">${esc(s[1] ?? "—")}</div></div>`).join("")}
-      </div></div></div>
-    <div class="rd" style="margin-top:16px">
-      <div>
-        <div class="viewer" id="viewer"><div class="vfallback"><span class="spin"></span> preparing viewer…</div></div>
-        <div class="panel" style="margin-top:14px"><div class="phead"><h3>Run log</h3>
-          <button class="btn sm ghost" id="reloadLog">reload</button></div>
-          <div class="pbody"><div class="logbox" id="log">loading…</div></div></div>
-      </div>
-      <div>
-        <div class="panel"><div class="phead"><h3>Segmentation metrics</h3></div>
-          <div class="pbody"><div class="metrics">${metrics.map(m => `<div class="metric"><div class="k">${m[0]}</div><div class="v">${esc(m[1])}</div></div>`).join("")}</div></div></div>
-        <div class="panel" style="margin-top:14px"><div class="phead"><h3>Parameters</h3></div><div class="pbody">${kvGrid(params)}</div></div>
-        <div class="panel" style="margin-top:14px"><div class="phead"><h3>Run environment — debrief</h3>${env.gpu ? `<span class="chip accent">${esc(env.gpu)}</span>` : `<span class="chip">CPU</span>`}</div>
-          <div class="pbody">${envPairs.length ? kvGrid(envPairs) : `<div class="muted">The full machine/hardware debrief (CPU, RAM, GPU, versions, peak memory, per-phase timings) is captured automatically when the run executes.</div>`}</div></div>
-        <div class="panel" style="margin-top:14px" id="qcPanel"></div>
-      </div>
-    </div>`;
-  loadLog(id);
-  $("#reloadLog").onclick = () => loadLog(id);
+  const summaryBody = `<div class="metrics" style="grid-template-columns:repeat(4,1fr)">
+    ${summary.map(s => `<div class="metric"><div class="k">${s[0]}</div><div class="v" style="font-size:15px">${esc(s[1] ?? "—")}</div></div>`).join("")}</div>`;
+  const metricsBody = `<div class="metrics">${metrics.map(m => `<div class="metric"><div class="k">${m[0]}</div><div class="v">${esc(m[1])}</div></div>`).join("")}</div>`;
+  const envBody = envPairs.length ? kvGrid(envPairs)
+    : `<div class="muted">The machine/hardware debrief (CPU, RAM, GPU, versions, peak memory, timings) is captured automatically when the run executes.</div>`;
+
+  const chips = PANEL_KEYS.map(k => `<button class="pchip ${panelShown.has(k) ? "on" : ""}" data-toggle="${k}">${PANEL_TITLES[k]}</button>`).join("");
+  const bar = `<div class="panelbar"><span class="muted" style="font-size:12px">Panels</span>${chips}<div class="grow"></div><button class="pchip" id="resetLayout">Reset layout</button></div>`;
+
+  const top = panelShown.has("summary") ? wrapPanel("summary", badge(r.status), summaryBody) : "";
+  const left = [], side = [];
+  if (panelShown.has("viewer")) left.push(wrapPanel("viewer", "", `<div class="viewer" id="viewer"><div class="vfallback"><span class="spin"></span> preparing viewer…</div></div>`, true));
+  if (panelShown.has("log")) left.push(wrapPanel("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log">loading…</div>`));
+  if (panelShown.has("metrics")) side.push(wrapPanel("metrics", "", metricsBody));
+  if (panelShown.has("parameters")) side.push(wrapPanel("parameters", "", kvGrid(params)));
+  if (panelShown.has("environment")) side.push(wrapPanel("environment", env.gpu ? `<span class="chip accent">${esc(env.gpu)}</span>` : `<span class="chip">CPU</span>`, envBody));
+  if (panelShown.has("qc")) side.push(wrapPanel("qc", "", `<div id="qcInner"></div>`));
+
+  $("#content").innerHTML = bar + top +
+    `<div class="report-main">
+       <div class="report-left" id="repLeft">${left.join("")}</div>
+       <div class="report-side" id="repSide">${side.join("")}</div>
+     </div>`;
+  if (!side.length) $("#repSide").style.display = "none";
+  if (!left.length) $("#repLeft").style.display = "none";
+
+  $("#content").querySelectorAll(".pchip[data-toggle]").forEach(b => b.onclick = () => {
+    const k = b.dataset.toggle; panelShown.has(k) ? panelShown.delete(k) : panelShown.add(k); renderRunDetail(id);
+  });
+  $("#content").querySelectorAll("[data-close]").forEach(b => b.onclick = () => {
+    const k = b.dataset.close; panelShown.delete(k); panelPinned.delete(k); savePinned(); renderRunDetail(id);
+  });
+  $("#content").querySelectorAll("[data-pin]").forEach(b => b.onclick = () => {
+    const k = b.dataset.pin; if (panelPinned.has(k)) panelPinned.delete(k); else { panelPinned.add(k); panelShown.add(k); } savePinned(); renderRunDetail(id);
+  });
+  $("#resetLayout").onclick = () => { panelPinned = new Set(PANEL_KEYS); panelShown = new Set(PANEL_KEYS); savePinned(); renderRunDetail(id); };
   $("#expBtn").onclick = () => exportReport(r);
   $("#cmpBtn").onclick = async () => {
     const runs = await api("/runs?dataset_id=" + r.dataset_id);
     if (runs.length < 2) return toast("Need ≥2 runs on this dataset to compare", "err");
     location.hash = "#/compare/" + runs.map(x => x.id).join(",");
   };
-  renderQC(r);
-  if (r.status === "succeeded") mountViewer(id);
-  else if (r.status === "running" || r.status === "queued") {
-    $("#viewer").innerHTML = `<div class="vfallback"><span class="spin"></span> ${r.status}… the viewer appears when the mask is ready.</div>`;
-    pollTimer = setInterval(async () => {
-      const u = await api("/runs/" + id);
-      if (u.status !== r.status) { if (parseHash().view === "run") renderRunDetail(id); }
-      else loadLog(id);
-    }, 4000);
-  } else {
-    $("#viewer").innerHTML = `<div class="vfallback"><div class="big" style="font-size:32px">⚠</div>${r.status}. See log below.<br><span class="muted">${esc(r.error || "")}</span></div>`;
+
+  if (panelShown.has("log")) { loadLog(id); const rl = $("#reloadLog"); if (rl) rl.onclick = () => loadLog(id); }
+  if (panelShown.has("qc")) renderQC(r);
+  if (panelShown.has("viewer")) {
+    if (r.status === "succeeded") mountViewer(id);
+    else if (r.status === "running" || r.status === "queued") {
+      $("#viewer").innerHTML = `<div class="vfallback"><span class="spin"></span> ${r.status}… the viewer appears when the mask is ready.</div>`;
+      pollTimer = setInterval(async () => {
+        const u = await api("/runs/" + id);
+        if (u.status !== r.status) { if (parseHash().view === "run") renderRunDetail(id); }
+        else if (panelShown.has("log")) loadLog(id);
+      }, 4000);
+    } else {
+      $("#viewer").innerHTML = `<div class="vfallback"><div class="big" style="font-size:32px">⚠</div>${r.status}. See log below.<br><span class="muted">${esc(r.error || "")}</span></div>`;
+    }
   }
 }
 
@@ -550,21 +591,19 @@ async function mountViewer(id) {
 
 /* --------------------------------------------------- QC / failure-mode panel */
 function renderQC(r) {
-  const panel = $("#qcPanel");
+  const panel = $("#qcInner");
+  if (!panel) return;
   const sel = new Set(r.qc_tags || []);
   const statusBtns = ["pass", "minor", "fail"].map(s =>
     `<button class="btn sm ${r.qc_status === s ? "primary" : "ghost"}" data-st="${s}">${s}</button>`).join("");
   panel.innerHTML = `
-    <div class="phead"><h3>QC & failure modes</h3>${qcPill(r.qc_status)}</div>
-    <div class="pbody">
-      <div class="field"><label>Outcome</label><div class="wrap" id="qcStatus">${statusBtns}</div></div>
+      <div class="field"><label>Outcome ${qcPill(r.qc_status)}</label><div class="wrap" id="qcStatus">${statusBtns}</div></div>
       <div class="field"><label>Failure modes <span class="muted">(click to toggle — used to find similar cases later)</span></label>
         <div class="wrap" id="qcTags">${VOCAB.map(v => `<span class="chip ${sel.has(v.key) ? "accent" : ""}" data-tag="${v.key}" style="cursor:pointer">${esc(v.label)}</span>`).join("")}</div></div>
       <div class="field"><label>Note</label><textarea class="input" id="qcNote" rows="2" placeholder="what went wrong / what to study…">${esc(r.review_note || "")}</textarea></div>
       <label class="checkline"><input type="checkbox" id="qcFlag" ${r.flagged ? "checked" : ""}> ⚑ Flag for retraining (candidate for the training set)</label>
       <div class="flex" style="margin-top:6px"><button class="btn primary" id="qcSave">Save review</button>
-        <a class="btn ghost" href="#/insights">View all failure modes →</a></div>
-    </div>`;
+        <a class="btn ghost" href="#/insights">View all failure modes →</a></div>`;
   let status = r.qc_status;
   panel.querySelectorAll("[data-st]").forEach(b => b.onclick = () => {
     status = b.dataset.st; panel.querySelectorAll("[data-st]").forEach(x => x.classList.toggle("primary", x === b));
@@ -659,7 +698,15 @@ function closeModal() { $("#modalRoot").innerHTML = ""; }
 
 /* -------------------------------------------------------------------- boot */
 async function boot() {
+  loadLayout();
   $("#newRunBtn").onclick = () => openNewRun();
+  const nt = $("#navToggle");
+  if (nt) nt.onclick = () => {
+    const a = document.querySelector(".app");
+    const hid = a.classList.toggle("navhidden");
+    try { localStorage.setItem("mlab_navhide", hid ? "1" : "0"); } catch { }
+  };
+  try { if (localStorage.getItem("mlab_navhide") === "1") document.querySelector(".app").classList.add("navhidden"); } catch { }
   try { const c = await api("/config"); $("#sysbox").innerHTML =
     `<b>Storage</b>
      <div class="row"><span>data</span><span title="${esc(c.data_root)}">${esc(c.data_root)}</span></div>
