@@ -45,6 +45,7 @@ let pollTimer = null;
 const clearPoll = () => {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   if (window.__cine) { clearInterval(window.__cine); window.__cine = null; }
+  if (window.__clcine) { clearInterval(window.__clcine); window.__clcine = null; }
 };
 
 // ---- configurable run-report panels (persisted) ----
@@ -517,12 +518,92 @@ async function renderCompare(arg) {
     ["Folds", r => esc((r.params || {}).folds ?? "—")], ["TTA", r => (r.params || {}).tta ? "on" : "off"],
     ["QC", r => qcPill(r.qc_status)], ["Failure modes", r => esc((r.qc_tags || []).join(", ") || "—")],
   ];
-  $("#content").innerHTML = `
-    <div class="panel"><div class="phead"><h3>Previews</h3><span class="muted">Δ ROI vs #${runs[0].id}</span></div>
-      <div class="pbody"><div class="wrap" style="align-items:flex-start">${previews}</div></div></div>
-    <div class="panel" style="margin-top:16px"><div class="phead"><h3>Metric comparison</h3></div>
+  const succ = runs.filter(r => r.status === "succeeded");
+  const canLink = succ.length >= 2;
+  const top = canLink
+    ? `<div class="clviewer" id="cmpViewer"><div class="vfallback" style="height:60vh"><span class="spin"></span> loading linked viewer…</div></div>`
+    : `<div class="panel"><div class="phead"><h3>Previews</h3><span class="muted">Δ ROI vs #${runs[0].id}</span></div>
+        <div class="pbody"><div class="wrap" style="align-items:flex-start">${previews}</div></div></div>`;
+  $("#content").innerHTML = top +
+    `<div class="panel" style="margin-top:16px"><div class="phead"><h3>Metric comparison</h3>${canLink ? `<span class="muted">interactive linked view above · scroll/drag one pane to move both</span>` : ""}</div>
       <table class="tbl"><thead><tr><th>Metric</th>${runs.map(r => `<th>#${r.id}</th>`).join("")}</tr></thead>
       <tbody>${rows.map(row => `<tr style="cursor:default"><td class="muted">${row[0]}</td>${runs.map(r => `<td>${row[1](r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  if (canLink) mountLinkedCompare(succ.slice(0, 2));
+}
+
+async function mountLinkedCompare(runs) {
+  const mod = await loadNiivue();
+  const box = document.getElementById("cmpViewer");
+  if (!box) return;
+  if (!mod) { box.innerHTML = `<div class="vfallback" style="height:200px"><div class="muted">Interactive viewer unavailable; use the table below.</div></div>`; return; }
+  const [A, B] = runs;
+  box.innerHTML = `
+    <div class="clbar">
+      <div class="vmodes" id="clModes">
+        <button class="btn sm" data-m="mpr">MPR</button>
+        <button class="btn sm" data-m="ax">Axial</button>
+        <button class="btn sm" data-m="cor">Coronal</button>
+        <button class="btn sm" data-m="sag">Sagittal</button>
+        <button class="btn sm" data-m="3d">3D</button>
+      </div>
+      <button class="btn sm" id="clZin" title="zoom in">＋</button>
+      <button class="btn sm" id="clZout" title="zoom out">－</button>
+      <button class="btn sm" id="clReset" title="reset view">⟲</button>
+      <label class="checkline" style="font-size:12px"><input type="checkbox" id="clSync" checked> sync panes</label>
+      <div class="grow"></div>
+      <label class="muted" style="font-size:11px">α A<input type="range" id="clOpA" min="0" max="1" step="0.05" value="0.5" style="width:64px;vertical-align:middle"></label>
+      <label class="muted" style="font-size:11px">α B<input type="range" id="clOpB" min="0" max="1" step="0.05" value="0.5" style="width:64px;vertical-align:middle"></label>
+      <button class="btn sm" id="clMax" title="maximize">⤢</button>
+    </div>
+    <div class="clcine" id="clCine" style="display:none">
+      <button class="btn sm" id="clPrev">⏮</button>
+      <button class="btn sm primary" id="clPlay">▶</button>
+      <button class="btn sm" id="clNext">⏭</button>
+      <input type="range" id="clSlider" min="0" max="0" value="0">
+      <span class="muted mono" id="clLabel">–</span>
+      <label class="muted" style="font-size:11px">fps <select id="clFps" class="input"><option>6</option><option selected>12</option><option>20</option></select></label>
+    </div>
+    <div class="clpanes">
+      <div class="clpane"><div class="cltag">#${A.id} <span class="ver">${esc(A.model_version || "")}</span></div><canvas id="glA"></canvas></div>
+      <div class="clpane"><div class="cltag">#${B.id} <span class="ver">${esc(B.model_version || "")}</span></div><canvas id="glB"></canvas></div>
+    </div>`;
+  try {
+    const mk = () => new mod.Niivue({ backColor: [0.02, 0.03, 0.05, 1], show3Dcrosshair: true, crosshairColor: [1, 0.6, 0, 0.6] });
+    const nvA = mk(), nvB = mk();
+    nvA.attachTo("glA"); nvB.attachTo("glB");
+    await nvA.loadVolumes([{ url: `/api/runs/${A.id}/view_input.nii.gz` }, { url: `/api/runs/${A.id}/view_mask.nii.gz`, colormap: "red", opacity: 0.5, cal_min: 0.5, cal_max: 1 }]);
+    await nvB.loadVolumes([{ url: `/api/runs/${B.id}/view_input.nii.gz` }, { url: `/api/runs/${B.id}/view_mask.nii.gz`, colormap: "red", opacity: 0.5, cal_min: 0.5, cal_max: 1 }]);
+    window.__nvA = nvA; window.__nvB = nvB; window.__nv = nvA;
+    const both = [nvA, nvB];
+    const SL = { mpr: nvA.sliceTypeMultiplanar, ax: nvA.sliceTypeAxial, cor: nvA.sliceTypeCoronal, sag: nvA.sliceTypeSagittal, "3d": nvA.sliceTypeRender };
+    let cur = "mpr", idx = 0, zoom = 1, syncing = true, guard = false;
+    const axisN = (m) => { const d = (nvA.volumes[0] && nvA.volumes[0].dims) || [3, 1, 1, 1]; return m === "ax" ? { i: 2, n: d[3] } : m === "cor" ? { i: 1, n: d[2] } : m === "sag" ? { i: 0, n: d[1] } : null; };
+    const stopCine = () => { if (window.__clcine) { clearInterval(window.__clcine); window.__clcine = null; } const pb = document.getElementById("clPlay"); if (pb) pb.innerHTML = "▶"; };
+    const gotoBoth = (ai, i) => { i = ((i % ai.n) + ai.n) % ai.n; guard = true; both.forEach(nv => { try { const p = (nv.scene && nv.scene.crosshairPos) ? Array.from(nv.scene.crosshairPos) : [0.5, 0.5, 0.5]; p[ai.i] = (i + 0.5) / ai.n; nv.scene.crosshairPos = p; nv.drawScene(); } catch { } }); guard = false; return i; };
+    const setSlice = (i) => { const ai = axisN(cur); if (!ai) return; idx = gotoBoth(ai, i); const sl = document.getElementById("clSlider"), lb = document.getElementById("clLabel"); if (sl) sl.value = idx; if (lb) lb.textContent = `${idx + 1} / ${ai.n}`; };
+    const updateCine = (m) => { const ai = axisN(m), bar = document.getElementById("clCine"); if (!ai) { bar.style.display = "none"; stopCine(); return; } bar.style.display = "flex"; document.getElementById("clSlider").max = ai.n - 1; idx = Math.min(idx, ai.n - 1); setSlice(idx); };
+    const setMode = (m) => { cur = m; stopCine(); both.forEach(nv => { try { nv.setSliceType(SL[m]); } catch { } }); box.querySelectorAll("#clModes .btn").forEach(b => b.classList.toggle("primary", b.dataset.m === m)); updateCine(m); };
+    const applyZoom = (z) => { zoom = Math.max(0.4, Math.min(10, z)); both.forEach(nv => { try { if (nv.scene && nv.scene.pan2Dxyzmm) { nv.scene.pan2Dxyzmm[3] = zoom; nv.drawScene(); } } catch { } }); };
+    const mirror = (from, to) => { if (!syncing || guard) return; guard = true; try { to.scene.crosshairPos = Array.from(from.scene.crosshairPos); to.drawScene(); } catch { } guard = false; };
+    nvA.onLocationChange = () => mirror(nvA, nvB);
+    nvB.onLocationChange = () => mirror(nvB, nvA);
+    box.querySelectorAll("#clModes .btn").forEach(b => b.onclick = () => setMode(b.dataset.m));
+    document.getElementById("clZin").onclick = () => applyZoom(zoom * 1.25);
+    document.getElementById("clZout").onclick = () => applyZoom(zoom / 1.25);
+    document.getElementById("clReset").onclick = () => { zoom = 1; both.forEach(nv => { try { if (nv.scene && nv.scene.pan2Dxyzmm) nv.scene.pan2Dxyzmm.set([0, 0, 0, 1]); } catch { } }); setMode("mpr"); };
+    document.getElementById("clSync").onchange = e => { syncing = e.target.checked; };
+    document.getElementById("clOpA").oninput = e => { try { nvA.setOpacity(1, +e.target.value); } catch { } };
+    document.getElementById("clOpB").oninput = e => { try { nvB.setOpacity(1, +e.target.value); } catch { } };
+    document.getElementById("clPrev").onclick = () => { stopCine(); setSlice(idx - 1); };
+    document.getElementById("clNext").onclick = () => { stopCine(); setSlice(idx + 1); };
+    document.getElementById("clSlider").oninput = e => { stopCine(); setSlice(+e.target.value); };
+    document.getElementById("clPlay").onclick = () => { if (window.__clcine) { stopCine(); return; } const fps = +document.getElementById("clFps").value || 12; document.getElementById("clPlay").innerHTML = "⏸"; window.__clcine = setInterval(() => { if (!document.getElementById("glA")) { stopCine(); return; } setSlice(idx + 1); }, 1000 / fps); };
+    document.getElementById("clMax").onclick = () => { const on = box.classList.toggle("vmax"); document.body.style.overflow = on ? "hidden" : ""; document.getElementById("clMax").innerHTML = on ? "⤡" : "⤢"; setTimeout(() => { both.forEach(nv => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }); }, 60); };
+    setMode("mpr");
+    setTimeout(() => { both.forEach(nv => { try { nv.resizeListener(); } catch { } try { nv.drawScene(); } catch { } }); }, 90);
+  } catch (e) {
+    box.innerHTML = `<div class="vfallback" style="height:200px"><div class="muted">Viewer error: ${esc(e.message)}</div></div>`;
+  }
 }
 async function loadLog(id) { try { const t = await api("/runs/" + id + "/log.txt"); const box = $("#log"); if (box) { box.textContent = t; box.scrollTop = box.scrollHeight; } } catch { } }
 
