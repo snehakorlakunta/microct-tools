@@ -15,6 +15,38 @@ viewer, no DICOM conversion). Built for a lab: you and colleagues open one URL.
 
 ---
 
+## What segmentation is (in plain terms)
+
+A microCT scan is a 3D block of tiny cubes (voxels); each one just holds a
+brightness number — how much X-ray that spot absorbed. **Segmentation** is going
+through that block and labelling every voxel as either "this is the structure I
+care about" (the ROI) or "not." The result is a second block of the same size — a
+stencil that's `1` where the structure is and `0` everywhere else. The red overlay
+this app shows in the viewer *is* that stencil laid on the grey image.
+
+Done by hand, that means tracing the outline slice by slice (R2 here has **459**
+slices) in tools like ImageJ/Fiji or 3D Slicer — hours of work, and subjective:
+two people draw slightly different boundaries, which makes samples hard to compare.
+
+This app does it with a **trained neural network (nnU-Net)** that learned the
+structure's visual fingerprint from 55 hand-labelled examples and now applies the
+*same* criterion to every scan automatically — for R2 it labelled ~9.8 million
+voxels (an ROI of 0.63 mm³) on its own. The win isn't just speed (minutes on a GPU
+vs. hours by hand); it's **consistency** (one standard across every scan) and a
+**human-in-the-loop improvement loop**: the model does the 459-slice grind, the
+expert reviews it, tags what's wrong, and feeds corrections back so the next model
+version is better. The machine doesn't replace the expert — it lets the expert
+supervise at scale.
+
+## Documentation
+
+- **[Executive summary](docs/EXECUTIVE_SUMMARY.md)** — what it does and why, for PIs/stakeholders.
+- **[User guide](docs/USER_GUIDE.md)** — click-by-click daily use (UI, viewer, QC, compare).
+- **[Technical guide](docs/TECHNICAL_GUIDE.md)** — how segmentation works, and the full
+  feedback → correct → retrain → register-new-version → re-run loop.
+
+---
+
 ## What it does
 
 - **Datasets** — scan a folder tree, auto-read each SkyScan `*_rec.log`
