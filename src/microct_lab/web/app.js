@@ -371,60 +371,48 @@ async function renderRunDetail(id) {
   const chips = PANEL_KEYS.map(k => `<button class="pchip ${panelShown.has(k) ? "on" : ""}" data-toggle="${k}">${PANEL_TITLES[k]}</button>`).join("");
   const bar = `<div class="panelbar"><span class="muted" style="font-size:12px">Panels</span>${chips}<div class="grow"></div><button class="pchip" id="resetLayout">Reset layout</button></div>`;
 
-  // left column = viewer (fills); right column = stacked, collapsible cards
-  const leftHtml = panelShown.has("viewer")
-    ? wrapCard("viewer", "", `<div class="viewer" id="viewer"><div class="vfallback"><span class="spin"></span> preparing viewer…</div></div>`, { flush: true, collapsible: false })
-    : "";
-  const right = [];
-  if (panelShown.has("summary")) right.push(wrapCard("summary", badge(r.status), summaryBody));
-  if (panelShown.has("metrics")) right.push(wrapCard("metrics", "", metricsBody));
-  if (panelShown.has("parameters")) right.push(wrapCard("parameters", "", kvGrid(params)));
-  if (panelShown.has("environment")) right.push(wrapCard("environment", env.gpu ? `<span class="chip accent">${esc(env.gpu)}</span>` : `<span class="chip">CPU</span>`, envBody));
-  if (panelShown.has("qc")) right.push(wrapCard("qc", "", `<div id="qcInner"></div>`));
-  if (panelShown.has("log")) right.push(wrapCard("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log">loading…</div>`));
+  // Build ALL panels once. Show/hide is a CSS display toggle, so toggling a panel
+  // never tears down/reloads the viewer or re-renders the other panels.
+  const leftHtml = wrapCard("viewer", "", `<div class="viewer" id="viewer"><div class="vfallback"><span class="spin"></span> preparing viewer…</div></div>`, { flush: true, collapsible: false });
+  const right = [
+    wrapCard("summary", badge(r.status), summaryBody),
+    wrapCard("metrics", "", metricsBody),
+    wrapCard("parameters", "", kvGrid(params)),
+    wrapCard("environment", env.gpu ? `<span class="chip accent">${esc(env.gpu)}</span>` : `<span class="chip">CPU</span>`, envBody),
+    wrapCard("qc", "", `<div id="qcInner"></div>`),
+    wrapCard("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log">loading…</div>`),
+  ].join("");
 
-  const hasLeft = !!leftHtml, hasRight = right.length > 0;
-  const sideW = Math.max(280, parseInt(localStorage.getItem("mlab_sidew")) || 400);
   $("#content").innerHTML = bar +
     `<div class="report-split">
-       <div class="report-left" id="repLeft"${hasLeft ? "" : ' style="display:none"'}>${leftHtml}</div>
-       <div class="splitter" id="splitter"${hasLeft && hasRight ? "" : ' style="display:none"'}></div>
-       <div class="report-side" id="repSide" style="${hasLeft ? `width:${sideW}px` : "flex:1"}${hasRight ? "" : ";display:none"}">${right.join("")}</div>
+       <div class="report-left" id="repLeft">${leftHtml}</div>
+       <div class="splitter" id="splitter"></div>
+       <div class="report-side" id="repSide">${right}</div>
      </div>`;
+  const wrap = $("#content");
 
-  // panel toggle chips (persisted) -> rebuild
-  $("#content").querySelectorAll(".pchip[data-toggle]").forEach(b => b.onclick = () => {
-    const k = b.dataset.toggle; panelShown.has(k) ? panelShown.delete(k) : panelShown.add(k); saveShown(); renderRunDetail(id);
-  });
-  // hide (persisted) -> rebuild
-  $("#content").querySelectorAll("[data-close]").forEach(b => b.onclick = () => {
-    panelShown.delete(b.dataset.close); saveShown(); renderRunDetail(id);
-  });
-  // collapse/expand (persisted) -> in place, keeps the viewer alive
-  $("#content").querySelectorAll("[data-collapse]").forEach(b => b.onclick = () => {
-    const k = b.dataset.collapse, card = b.closest(".panel");
-    const c = card.classList.toggle("collapsed");
-    c ? panelCollapsed.add(k) : panelCollapsed.delete(k);
-    b.textContent = c ? "▸" : "▾"; b.title = c ? "expand" : "collapse"; saveCollapsed();
-  });
-  $("#resetLayout").onclick = () => {
-    panelShown = new Set(PANEL_KEYS); panelCollapsed = new Set();
-    saveShown(); saveCollapsed(); try { localStorage.removeItem("mlab_sidew"); } catch { } renderRunDetail(id);
-  };
-  initSplitter();
-  const main = document.querySelector(".main"); if (main) main.scrollTop = 0;
-  fitReport();
-  setTimeout(fitReport, 80);
-  $("#expBtn").onclick = () => exportReport(r);
-  $("#cmpBtn").onclick = async () => {
-    const runs = await api("/runs?dataset_id=" + r.dataset_id);
-    if (runs.length < 2) return toast("Need ≥2 runs on this dataset to compare", "err");
-    location.hash = "#/compare/" + runs.map(x => x.id).join(",");
+  const applyPanelVisibility = () => {
+    PANEL_KEYS.forEach(k => { const el = wrap.querySelector(`[data-panel="${k}"]`); if (el) el.style.display = panelShown.has(k) ? "" : "none"; });
+    wrap.querySelectorAll(".pchip[data-toggle]").forEach(c => c.classList.toggle("on", panelShown.has(c.dataset.toggle)));
+    const hasLeft = panelShown.has("viewer");
+    const hasRight = ["summary", "metrics", "parameters", "environment", "qc", "log"].some(k => panelShown.has(k));
+    const rl = $("#repLeft"), rs = $("#repSide"), sp = $("#splitter");
+    if (rl) rl.style.display = hasLeft ? "" : "none";
+    if (sp) sp.style.display = (hasLeft && hasRight) ? "" : "none";
+    if (rs) {
+      rs.style.display = hasRight ? "" : "none";
+      const w = Math.max(280, parseInt(localStorage.getItem("mlab_sidew")) || 400);
+      if (hasLeft) { rs.style.flex = "0 0 auto"; rs.style.width = w + "px"; } else { rs.style.flex = "1"; rs.style.width = ""; }
+    }
+    fitReport();
   };
 
-  if (panelShown.has("log")) { loadLog(id); const rl = $("#reloadLog"); if (rl) rl.onclick = () => loadLog(id); }
-  if (panelShown.has("qc")) renderQC(r);
-  if (panelShown.has("viewer")) {
+  // Viewer mounts once (lazily on first show); toggling other panels never remounts it.
+  let viewerMounted = false;
+  const ensureViewer = () => {
+    if (viewerMounted) { if (window.__nv) { try { window.__nv.resizeListener(); } catch { } } return; }
+    if (!panelShown.has("viewer")) return;
+    viewerMounted = true;
     if (r.status === "succeeded") mountViewer(id);
     else if (r.status === "running" || r.status === "queued") {
       $("#viewer").innerHTML = `<div class="vfallback"><span class="spin"></span> ${r.status}… the viewer appears when the mask is ready.</div>`;
@@ -436,7 +424,39 @@ async function renderRunDetail(id) {
     } else {
       $("#viewer").innerHTML = `<div class="vfallback"><div class="big" style="font-size:32px">⚠</div>${r.status}. See log below.<br><span class="muted">${esc(r.error || "")}</span></div>`;
     }
-  }
+  };
+
+  wrap.querySelectorAll(".pchip[data-toggle]").forEach(b => b.onclick = () => {
+    const k = b.dataset.toggle; panelShown.has(k) ? panelShown.delete(k) : panelShown.add(k);
+    saveShown(); applyPanelVisibility(); ensureViewer();
+  });
+  wrap.querySelectorAll("[data-close]").forEach(b => b.onclick = () => {
+    panelShown.delete(b.dataset.close); saveShown(); applyPanelVisibility();
+  });
+  wrap.querySelectorAll("[data-collapse]").forEach(b => b.onclick = () => {
+    const k = b.dataset.collapse, card = b.closest(".panel");
+    const c = card.classList.toggle("collapsed");
+    c ? panelCollapsed.add(k) : panelCollapsed.delete(k);
+    b.textContent = c ? "▸" : "▾"; b.title = c ? "expand" : "collapse"; saveCollapsed();
+  });
+  $("#resetLayout").onclick = () => {
+    panelShown = new Set(PANEL_KEYS); panelCollapsed = new Set();
+    saveShown(); saveCollapsed(); try { localStorage.removeItem("mlab_sidew"); } catch { } renderRunDetail(id);
+  };
+  $("#expBtn").onclick = () => exportReport(r);
+  $("#cmpBtn").onclick = async () => {
+    const runs = await api("/runs?dataset_id=" + r.dataset_id);
+    if (runs.length < 2) return toast("Need ≥2 runs on this dataset to compare", "err");
+    location.hash = "#/compare/" + runs.map(x => x.id).join(",");
+  };
+
+  initSplitter();
+  const main = document.querySelector(".main"); if (main) main.scrollTop = 0;
+  renderQC(r);                                   // populated once (harmless if hidden)
+  loadLog(id); { const rl = $("#reloadLog"); if (rl) rl.onclick = () => loadLog(id); }
+  applyPanelVisibility();
+  ensureViewer();
+  setTimeout(fitReport, 80);
 }
 
 function exportReport(r) {
