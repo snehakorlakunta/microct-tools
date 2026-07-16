@@ -6,6 +6,7 @@ Cross-platform (Windows/Linux), no Redis/broker. Run alongside the web server:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from datetime import datetime
@@ -37,6 +38,55 @@ def _finish(db, run: Run, status: str, error: str | None = None) -> None:
     if run.started_at:
         run.duration_sec = (run.ended_at - run.started_at).total_seconds()
     db.commit()
+
+
+def _kill_tree(pid: int) -> None:
+    """Best-effort kill of the segmentation subprocess and any children it spawned."""
+    try:
+        import psutil
+        parent = psutil.Process(pid)
+        for pr in parent.children(recursive=True) + [parent]:
+            try:
+                pr.kill()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001 — psutil missing or process already gone
+        try:
+            import signal
+            os.kill(pid, getattr(signal, "SIGTERM", 15))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _cancel_requested(run_id: int) -> bool:
+    """Fresh read on its own session so a status change committed by the API is seen."""
+    try:
+        with SessionLocal() as s:
+            return s.scalar(select(Run.status).where(Run.id == run_id)) == "canceling"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _run_subprocess(cmd, log_path, run_id) -> tuple[int, bool]:
+    """Run cmd, streaming output to log_path, while polling for an API cancel
+    request. Returns (returncode, canceled)."""
+    with open(log_path, "w", encoding="utf-8") as lf:
+        lf.write("$ " + " ".join(cmd) + "\n\n")
+        lf.flush()
+        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+        while True:
+            try:
+                proc.wait(timeout=2.0)
+                return proc.returncode, False
+            except subprocess.TimeoutExpired:
+                pass
+            if _cancel_requested(run_id):
+                _kill_tree(proc.pid)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                return (proc.returncode if proc.returncode is not None else -1), True
 
 
 def _execute(db, run: Run) -> None:
@@ -71,14 +121,14 @@ def _execute(db, run: Run) -> None:
     if p.get("tta"):
         cmd.append("--tta")
 
-    with open(log_path, "w", encoding="utf-8") as lf:
-        lf.write("$ " + " ".join(cmd) + "\n\n")
-        lf.flush()
-        proc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT)
+    returncode, canceled = _run_subprocess(cmd, log_path, run.id)
+    if canceled:
+        _finish(db, run, "canceled", "aborted by user")
+        return
 
     case = _case(ds.name)
     result_json = out / f"{case}_result.json"
-    if proc.returncode == 0 and result_json.exists():
+    if returncode == 0 and result_json.exists():
         r = json.loads(result_json.read_text())
         run.roi_voxels = r.get("roi_voxels")
         run.roi_mm3 = r.get("roi_mm3")
@@ -103,7 +153,7 @@ def _execute(db, run: Run) -> None:
             tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-8:])
         except OSError:
             pass
-        _finish(db, run, "failed", f"exit code {proc.returncode}\n{tail}")
+        _finish(db, run, "failed", f"exit code {returncode}\n{tail}")
 
 
 def _case(name: str) -> str:
@@ -114,9 +164,12 @@ def _case(name: str) -> str:
 def run_worker() -> None:
     init_db()
     db = SessionLocal()
-    # Recover runs left 'running' by a previous crash.
-    for stale in db.scalars(select(Run).where(Run.status == "running")).all():
-        _finish(db, stale, "failed", "worker restarted while this run was in progress")
+    # Recover runs left mid-flight by a previous crash.
+    for stale in db.scalars(select(Run).where(Run.status.in_(["running", "canceling"]))).all():
+        if stale.status == "canceling":
+            _finish(db, stale, "canceled", "aborted by user")
+        else:
+            _finish(db, stale, "failed", "worker restarted while this run was in progress")
     print(f"[worker] ready. polling every {settings.poll_seconds}s. "
           f"results -> {settings.results_root}", flush=True)
     try:

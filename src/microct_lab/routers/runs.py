@@ -131,27 +131,41 @@ def review_run(run_id: int, body: RunReview, db: Session = Depends(get_db)):
 
 @router.post("/{run_id}/cancel", response_model=RunOut)
 def cancel_run(run_id: int, db: Session = Depends(get_db)):
+    """Stop a run. Queued runs cancel immediately; a running run is flagged
+    'canceling' and the worker kills its segmentation process within a few seconds."""
     r = db.get(Run, run_id)
     if not r:
         raise HTTPException(404, "run not found")
-    if r.status != "queued":
-        raise HTTPException(409, f"can only cancel queued runs (this one is {r.status})")
-    r.status = "canceled"
+    if r.status == "queued":
+        r.status = "canceled"
+    elif r.status == "running":
+        r.status = "canceling"
+    elif r.status == "canceling":
+        pass  # already stopping — idempotent
+    else:
+        raise HTTPException(409, f"cannot stop a run that is {r.status}")
     db.commit()
     db.refresh(r)
     return _out(r)
 
 
 @router.delete("/{run_id}")
-def delete_run(run_id: int, db: Session = Depends(get_db)):
+def delete_run(run_id: int, purge: bool = False, db: Session = Depends(get_db)):
+    """Delete a run's registry record. With ?purge=true also remove its output
+    folder from disk. In-flight runs must be stopped first."""
     r = db.get(Run, run_id)
     if not r:
         raise HTTPException(404, "run not found")
-    if r.status == "running":
-        raise HTTPException(409, "run is in progress")
+    if r.status in ("running", "canceling"):
+        raise HTTPException(409, "run is in progress — stop it first")
+    purged = False
+    if purge and r.output_dir and os.path.isdir(r.output_dir):
+        import shutil
+        shutil.rmtree(r.output_dir, ignore_errors=True)
+        purged = not os.path.isdir(r.output_dir)
     db.delete(r)
     db.commit()
-    return {"deleted": run_id}
+    return {"deleted": run_id, "purged": purged}
 
 
 # ---- files for the viewer (explicit extensions so NiiVue detects the format) ----
@@ -354,6 +368,10 @@ def run_progress(run_id: int, db: Session = Depends(get_db)):
         return {"status": "queued", "phase": "queued", "percent": 0,
                 "determinate": True, "detail": "waiting for a free worker",
                 "elapsed_sec": 0, "eta_sec": None}
+    if r.status == "canceling":
+        return {"status": "canceling", "phase": "canceling", "percent": None,
+                "determinate": False, "detail": "stopping the segmentation process…",
+                "elapsed_sec": None, "eta_sec": None}
 
     text = ""
     if r.log_path and os.path.exists(r.log_path):

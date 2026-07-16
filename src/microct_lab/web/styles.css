@@ -263,6 +263,15 @@ input[type=range]{accent-color:var(--accent)}
 .clviewer.vmax{position:fixed;inset:0;z-index:70;border-radius:0;height:100vh}
 .clviewer.vmax .clpanes{flex:1;height:auto;min-height:0}
 
+/* stop / delete controls */
+.btn.danger{border-color:#5b2330;background:#2a1720;color:#ff9b9b}
+.btn.danger:hover{border-color:#7a2f40;background:#3a1c28;color:#ffbcbc}
+.ico{background:transparent;border:1px solid transparent;color:var(--muted);border-radius:6px;
+  cursor:pointer;font-size:13px;padding:2px 7px;line-height:1}
+.ico:hover{background:var(--panel3);color:var(--text)}
+.ico[data-del]:hover{color:#ff9b9b}
+.rowact{white-space:nowrap;text-align:right}
+
 /* in-progress run banner (phase + sliding-window percent) */
 .runprog{border:1px solid var(--border);background:var(--panel);border-radius:var(--radius);
   padding:12px 14px;margin-bottom:14px;display:flex;flex-direction:column;gap:8px}

@@ -322,11 +322,19 @@ async function renderRuns(preset) {
     <select class="input" id="ftag"><option value="">Any failure mode</option>${VOCAB.map(v => `<option value="${v.key}" ${v.key === runFilters.qc_tag ? "selected" : ""}>${esc(v.label)}</option>`).join("")}</select>
     <div class="grow"></div></div>`);
   const wrap = h(`<div class="panel"><table class="tbl"><thead><tr><th style="width:28px"></th><th>Run</th><th>Dataset</th><th>Model</th><th>Status</th>
-    <th class="right">ROI volume</th><th class="right">Duration</th><th>Machine</th><th>QC</th><th>Created</th></tr></thead><tbody id="rrows"></tbody></table></div>`);
+    <th class="right">ROI volume</th><th class="right">Duration</th><th>Machine</th><th>QC</th><th>Created</th><th></th></tr></thead><tbody id="rrows"></tbody></table></div>`);
   $("#content").innerHTML = ""; $("#content").append(bar, wrap);
   const reload = async () => {
     const p = new URLSearchParams(Object.fromEntries(Object.entries(runFilters).filter(([, v]) => v))).toString();
     const rows = await api("/runs" + (p ? "?" + p : ""));
+    const byId = Object.fromEntries(rows.map(x => [String(x.id), x]));
+    const acts = r => {
+      const stop = ["running", "queued", "canceling"].includes(r.status)
+        ? `<button class="ico" title="Stop run" data-stop="${r.id}">■</button>` : "";
+      const del = ["failed", "canceled"].includes(r.status)
+        ? `<button class="ico" title="Delete run" data-del="${r.id}">🗑</button>` : "";
+      return stop + del;
+    };
     $("#rrows").innerHTML = rows.length ? rows.map(r => `
       <tr onclick="location.hash='#/run/${r.id}'">
         <td onclick="event.stopPropagation()"><input type="checkbox" class="rck" value="${r.id}"></td>
@@ -335,8 +343,17 @@ async function renderRuns(preset) {
         <td>${badge(r.status)}</td><td class="num">${fmtVol(r.roi_mm3)}</td><td class="num">${fmtDur(r.duration_sec)}</td>
         <td class="muted">${esc(r.host || (r.env || {}).host || "—")}</td>
         <td>${qcPill(r.qc_status)}${r.flagged ? ' <span title="flagged" style="color:var(--amber)">⚑</span>' : ""}</td>
-        <td class="muted">${fmtDate(r.created_at)}</td></tr>`).join("")
-      : `<tr><td colspan="10" class="muted" style="padding:22px">No runs match.</td></tr>`;
+        <td class="muted">${fmtDate(r.created_at)}</td>
+        <td class="rowact" onclick="event.stopPropagation()">${acts(r)}</td></tr>`).join("")
+      : `<tr><td colspan="11" class="muted" style="padding:22px">No runs match.</td></tr>`;
+    $("#rrows").querySelectorAll("[data-stop]").forEach(b => b.onclick = async (e) => {
+      e.stopPropagation(); b.disabled = true;
+      try { await api("/runs/" + b.dataset.stop + "/cancel", { method: "POST" }); toast("Stopping run…", "ok"); reload(); }
+      catch (err) { b.disabled = false; toast("Stop failed: " + err.message, "err"); }
+    });
+    $("#rrows").querySelectorAll("[data-del]").forEach(b => b.onclick = (e) => {
+      e.stopPropagation(); confirmDeleteRun(byId[b.dataset.del] || { id: b.dataset.del, status: "failed" }, reload);
+    });
   };
   $("#fstatus").onchange = e => { runFilters.status = e.target.value; reload(); };
   $("#fqc").onchange = e => { runFilters.qc_status = e.target.value; reload(); };
@@ -349,12 +366,16 @@ async function renderRuns(preset) {
 /* -------------------------------------------------------------- run detail */
 async function renderRunDetail(id) {
   const r = await api("/runs/" + id);
+  const canStop = ["running", "queued"].includes(r.status);
+  const terminal = ["succeeded", "failed", "canceled"].includes(r.status);
   $("#pageTitle").innerHTML = `Run #${r.id} — report`;
   $("#pageSub").textContent = `${r.dataset_name || ""} • ${r.model_name || ""} ${r.model_version || ""}`;
   $("#pageActions").innerHTML =
     `<button class="btn" id="cmpBtn">⇄ Compare dataset runs</button>
      ${r.status === "succeeded" ? `<button class="btn" id="bmpBtn" title="Save the mask as one BMP per slice, in the run's results folder">🖼 Mask BMPs</button>` : ""}
      <button class="btn" id="expBtn">⭳ Export report</button>
+     ${canStop ? `<button class="btn danger" id="stopBtn">■ Stop run</button>` : ""}
+     ${terminal ? `<button class="btn ghost" id="delBtn">🗑 Delete</button>` : ""}
      <a class="btn ghost" href="#/runs">← All runs</a>`;
   const snap = r.model_snapshot || {}, env = r.env || {}, p = r.params || {};
   const summary = [
@@ -391,7 +412,7 @@ async function renderRunDetail(id) {
     wrapCard("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log">loading…</div>`),
   ].join("");
 
-  const active = r.status === "running" || r.status === "queued";
+  const active = ["running", "queued", "canceling"].includes(r.status);
   const progHtml = active ? `<div class="runprog" id="runProg">
        <div class="rp-head"><span class="rp-phase">preparing…</span><span class="rp-elapsed muted"></span></div>
        <div class="rp-track"><div class="rp-fill" style="width:0%"></div></div>
@@ -482,6 +503,15 @@ async function renderRunDetail(id) {
     };
   }
 
+  const stopBtn = $("#stopBtn");
+  if (stopBtn) stopBtn.onclick = async () => {
+    stopBtn.disabled = true; stopBtn.textContent = "stopping…";
+    try { await api("/runs/" + id + "/cancel", { method: "POST" }); toast("Stopping run…", "ok"); renderRunDetail(id); }
+    catch (e) { stopBtn.disabled = false; stopBtn.textContent = "■ Stop run"; toast("Stop failed: " + e.message, "err"); }
+  };
+  const delBtn = $("#delBtn");
+  if (delBtn) delBtn.onclick = () => confirmDeleteRun(r, () => { location.hash = "#/runs"; });
+
   initSplitter();
   const main = document.querySelector(".main"); if (main) main.scrollTop = 0;
   renderQC(r);                                   // populated once (harmless if hidden)
@@ -493,7 +523,7 @@ async function renderRunDetail(id) {
   if (active) {
     const PHASE = { starting: "Starting", queued: "Queued", converting: "Converting slices → volume",
       loading: "Loading model", predicting: "Segmenting — nnU-Net inference",
-      finalizing: "Finalizing — mask, preview, BMPs",
+      finalizing: "Finalizing — mask, preview, BMPs", canceling: "Stopping run",
       succeeded: "Complete", failed: "Failed", canceled: "Canceled" };
     const paintProg = (p) => {
       const el = $("#runProg"); if (!el || !p) return;
@@ -520,6 +550,23 @@ async function renderRunDetail(id) {
     tick();
     pollTimer = setInterval(tick, 3000);
   }
+}
+
+function confirmDeleteRun(r, after) {
+  const succeeded = r.status === "succeeded";
+  const body = `<p>Delete <b>run #${r.id}</b>${r.dataset_name ? " · " + esc(r.dataset_name) : ""}${r.model_version ? ` <span class="ver">${esc(r.model_version)}</span>` : ""}? This removes it from the registry.</p>
+    <label class="checkline" style="margin-top:10px"><input type="checkbox" id="delPurge" ${succeeded ? "" : "checked"}> Also delete its result files on disk <span class="muted">(irreversible)</span></label>
+    ${succeeded ? `<p class="muted" style="margin-top:8px;font-size:12px">This run <b>succeeded</b> — ticking the box deletes its mask, preview and BMP stack.</p>` : ""}`;
+  modal("Delete run", body, [{
+    label: "Delete", cls: "danger", fn: async () => {
+      const purge = !!($("#delPurge") && $("#delPurge").checked);
+      try {
+        await api(`/runs/${r.id}?purge=${purge ? "true" : "false"}`, { method: "DELETE" });
+        closeModal(); toast(`Deleted run #${r.id}${purge ? " + files" : ""}`, "ok");
+        if (after) after();
+      } catch (e) { toast("Delete failed: " + e.message, "err"); }
+    }
+  }]);
 }
 
 function exportReport(r) {
