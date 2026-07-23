@@ -109,9 +109,12 @@ function initSplitter() {
 /* ------------------------------------------------------------------ router */
 const PAGES = {
   overview: { title: "Overview", sub: "Your segmentation registry at a glance", fn: renderOverview },
-  datasets: { title: "Datasets", sub: "Catalog of microCT scans", fn: renderDatasets },
+  projects: { title: "Projects", sub: "Projects → experiments → datasets & analyses", fn: renderProjects },
+  project: { title: "Project", sub: "", fn: renderProjectDetail },
+  datasets: { title: "Datasets", sub: "Catalog of microCT & omics datasets", fn: renderDatasets },
   models: { title: "Models", sub: "Trained models & versions", fn: renderModels },
   runs: { title: "Runs", sub: "Processing history", fn: renderRuns },
+  timeline: { title: "Timeline", sub: "Everything, newest first", fn: renderTimeline },
   insights: { title: "QC & Insights", sub: "Failure modes and review status", fn: renderInsights },
   run: { title: "Run", sub: "", fn: renderRunDetail },
   compare: { title: "Compare runs", sub: "Side-by-side results", fn: renderCompare },
@@ -165,35 +168,53 @@ async function renderOverview() {
 }
 
 /* ---------------------------------------------------------------- datasets */
-let dsFilters = { q: "", study: "", scanner: "", sort: "created_at", order: "desc" };
+let dsFilters = { q: "", study: "", scanner: "", type: "", tag: "", sort: "created_at", order: "desc" };
+let dsView = "grid";
 async function renderDatasets() {
   $("#pageActions").innerHTML = `<button class="btn" id="ingestBtn">⟳ Ingest datasets</button>`;
   $("#ingestBtn").onclick = doIngest;
-  const facets = await api("/datasets/facets").catch(() => ({ studies: [], scanners: [] }));
+  const facets = await api("/datasets/facets").catch(() => ({ studies: [], scanners: [], types: [], organisms: [], tags: [] }));
   const bar = h(`<div class="toolbar">
     <div class="search"><span class="mag">⌕</span><input class="input" id="q" placeholder="Search datasets…" value="${esc(dsFilters.q)}"></div>
+    <select class="input" id="type"><option value="">All types</option>${(facets.types || []).map(s => `<option ${s === dsFilters.type ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
     <select class="input" id="study"><option value="">All studies</option>${facets.studies.map(s => `<option ${s === dsFilters.study ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
-    <select class="input" id="scanner"><option value="">All scanners</option>${facets.scanners.map(s => `<option ${s === dsFilters.scanner ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
+    <select class="input" id="tag"><option value="">Any tag</option>${(facets.tags || []).map(s => `<option ${s === dsFilters.tag ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
     <div class="grow"></div>
     <select class="input" id="sort">
-      ${[["created_at", "Newest"], ["name", "Name"], ["voxel_size_um", "Voxel size"], ["slices", "Slices"], ["scan_date", "Scan date"]].map(o => `<option value="${o[0]}" ${o[0] === dsFilters.sort ? "selected" : ""}>${o[1]}</option>`).join("")}
+      ${[["created_at", "Newest"], ["name", "Name"], ["voxel_size_um", "Voxel size"], ["slices", "Slices"], ["scan_date", "Scan date"], ["type", "Type"]].map(o => `<option value="${o[0]}" ${o[0] === dsFilters.sort ? "selected" : ""}>${o[1]}</option>`).join("")}
     </select>
-    <button class="btn sm" id="order">${dsFilters.order === "desc" ? "↓" : "↑"}</button></div>`);
-  const grid = h(`<div class="grid" id="grid"></div>`);
+    <button class="btn sm" id="order">${dsFilters.order === "desc" ? "↓" : "↑"}</button>
+    <button class="btn sm" id="viewToggle" title="Toggle grid / organization tree">${dsView === "grid" ? "🌳 Tree" : "▦ Grid"}</button></div>`);
+  const grid = h(`<div id="grid"></div>`);
   $("#content").innerHTML = ""; $("#content").append(bar, grid);
 
   const reload = async () => {
-    const p = new URLSearchParams(dsFilters).toString();
-    const rows = await api("/datasets?" + p);
-    grid.innerHTML = rows.length ? rows.map(dsCard).join("")
-      : `<div class="empty" style="grid-column:1/-1"><div class="big">▦</div>No datasets. Set <b>MICROCT_DATA_ROOT</b> and click <b>Ingest datasets</b>.</div>`;
+    if (dsView === "tree") {
+      const tax = await api("/datasets/taxonomy");
+      grid.className = "";
+      grid.innerHTML = tax.types.length ? tax.types.map(t => `
+        <div class="panel" style="margin-bottom:12px"><div class="phead"><h3>${TYPE_ICON[t.type] || "◆"} ${esc(t.type)}</h3></div>
+          <div class="pbody">${t.organisms.map(o => `
+            <div class="treeset"><div class="treeset-head"><span class="tset-name">${esc(o.organism)} <span class="muted">(${o.datasets.length})</span></span></div>
+              <div class="treeds">${o.datasets.map(d => `<div class="dsrow" data-ds="${d.id}"><span class="dsrow-ic">${TYPE_ICON[t.type] || "◆"}</span><span class="dsrow-nm">${esc(d.name)}</span><span class="muted mono">${d.slices ? d.slices + " sl" : ""}${d.run_count ? " · " + d.run_count + " run" + (d.run_count > 1 ? "s" : "") : ""}</span></div>`).join("")}</div>
+            </div>`).join("")}</div></div>`).join("")
+        : `<div class="empty"><div class="big">🌳</div>No datasets to organize yet.</div>`;
+    } else {
+      const p = new URLSearchParams(dsFilters).toString();
+      const rows = await api("/datasets?" + p);
+      grid.className = "grid";
+      grid.innerHTML = rows.length ? rows.map(dsCard).join("")
+        : `<div class="empty" style="grid-column:1/-1"><div class="big">▦</div>No datasets. Set <b>MICROCT_DATA_ROOT</b> and click <b>Ingest datasets</b>.</div>`;
+    }
     grid.querySelectorAll("[data-ds]").forEach(c => c.onclick = () => openDataset(+c.dataset.ds));
   };
   $("#q").oninput = debounce(e => { dsFilters.q = e.target.value; reload(); });
+  $("#type").onchange = e => { dsFilters.type = e.target.value; reload(); };
   $("#study").onchange = e => { dsFilters.study = e.target.value; reload(); };
-  $("#scanner").onchange = e => { dsFilters.scanner = e.target.value; reload(); };
+  $("#tag").onchange = e => { dsFilters.tag = e.target.value; reload(); };
   $("#sort").onchange = e => { dsFilters.sort = e.target.value; reload(); };
   $("#order").onclick = () => { dsFilters.order = dsFilters.order === "desc" ? "asc" : "desc"; $("#order").textContent = dsFilters.order === "desc" ? "↓" : "↑"; reload(); };
+  $("#viewToggle").onclick = () => { dsView = dsView === "grid" ? "tree" : "grid"; $("#viewToggle").textContent = dsView === "grid" ? "🌳 Tree" : "▦ Grid"; reload(); };
   await reload();
 }
 function dsCard(d) {
@@ -222,42 +243,76 @@ async function doIngest() {
 }
 
 /* --------------------------------------------------------- dataset drawer */
+const DATASET_TYPES = ["uct", "scrna", "spatial", "omics", "other"];
 async function openDataset(id) {
-  const d = await api("/datasets/" + id);
-  const runs = await api("/runs?dataset_id=" + id);
-  const log = d.log || {};
+  const [d, runs, exps, sets] = await Promise.all([
+    api("/datasets/" + id), api("/runs?dataset_id=" + id),
+    api("/experiments").catch(() => []), api("/sets").catch(() => [])]);
+  const expName = Object.fromEntries(exps.map(e => [e.id, e.name]));
   const metaRows = [
     ["Scanner", d.scanner], ["Voxel size", vox(d.voxel_size_um)],
     ["Dimensions", d.width ? `${d.width} × ${d.height} × ${d.slices}` : d.slices],
     ["Bit depth", d.bit_depth], ["Source", `${d.source_voltage_kv || "?"} kV / ${d.source_current_ua || "?"} µA`],
-    ["Filter", d.filter], ["Scan date", d.scan_date], ["Study", d.study],
+    ["Filter", d.filter], ["Scan date", d.scan_date],
     ["Size", fmtBytes(d.size_bytes)], ["Path", `<span class="mono" style="font-size:11px">${esc(d.slices_path)}</span>`],
   ];
+  const setOpts = `<option value="">— unassigned —</option>` + sets.map(s =>
+    `<option value="${s.id}" ${s.id === d.set_id ? "selected" : ""}>${esc(expName[s.experiment_id] || "exp")} / ${esc(s.name)}</option>`).join("");
+  const typeOpts = DATASET_TYPES.map(t => `<option value="${t}" ${t === d.type ? "selected" : ""}>${t}</option>`).join("");
   const runsTbl = runs.length ? `<table class="tbl"><thead><tr><th>Run</th><th>Model</th><th>Status</th><th class="right">ROI</th><th>QC</th></tr></thead><tbody>
     ${runs.map(r => `<tr onclick="location.hash='#/run/${r.id}'"><td>#${r.id}</td>
       <td>${esc(r.model_name || "")} <span class="ver">${esc(r.model_version || "")}</span></td>
       <td>${badge(r.status)}</td><td class="num">${fmtVol(r.roi_mm3)}</td>
       <td>${qcPill(r.qc_status)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="muted" style="padding:14px">No runs yet for this dataset.</div>`;
-  const m = modal(esc(d.name), `
+  modal(esc(d.name), `
     <div class="wrap" style="margin-bottom:6px">${d.thumbnail ? `<img src="/api/datasets/${id}/thumbnail" style="width:100%;max-height:200px;object-fit:contain;border-radius:10px;border:1px solid var(--border);background:#05070a">` : ""}</div>
     <div class="mcard"><div class="kv">${metaRows.map(r => `<div class="k">${r[0]}</div><div class="v">${r[1] ?? "—"}</div>`).join("")}</div></div>
+    <div class="wrap">
+      <div class="field" style="flex:2"><label>Name</label><input class="input" id="dsName" value="${esc(d.name)}"></div>
+      <div class="field" style="flex:1"><label>Type</label><select class="input" id="dsType">${typeOpts}</select></div>
+    </div>
+    <div class="wrap">
+      <div class="field" style="flex:1"><label>Organism</label><input class="input" id="dsOrg" value="${esc(d.organism || "")}" placeholder="Mouse, Rat, …"></div>
+      <div class="field" style="flex:1"><label>Study</label><input class="input" id="dsStudy" value="${esc(d.study || "")}"></div>
+    </div>
+    <div class="field"><label>Assign to set (experiment / set)</label><select class="input" id="dsSet">${setOpts}</select>
+      <div class="hint">Manage projects, experiments & sets in the Projects tab.</div></div>
     <div class="field"><label>Tags (comma-separated)</label><input class="input" id="dsTags" value="${esc((d.tags || []).join(", "))}"></div>
     <div class="field"><label>Notes</label><textarea class="input" id="dsNotes" rows="2">${esc(d.notes || "")}</textarea></div>
     <label class="checkline"><input type="checkbox" id="dsFlag" ${d.flagged ? "checked" : ""}> Flag this dataset</label>
     <div class="section-title" style="margin:8px 0 6px">Runs on this dataset — compare across model versions</div>
     ${runsTbl}
   `, [
-    { label: "New run on this dataset", cls: "primary", fn: () => { closeModal(); openNewRun([id]); } },
-    { label: "Visualize dataset", fn: () => { closeModal(); location.hash = "#/dataset/" + id; } },
-    { label: "Compare runs", fn: () => { if (runs.length < 2) return toast("Need ≥2 runs to compare", "err"); closeModal(); location.hash = "#/compare/" + runs.map(x => x.id).join(","); } },
+    { label: "New run", cls: "primary", fn: () => { closeModal(); openNewRun([id]); } },
+    { label: "Visualize", fn: () => { closeModal(); location.hash = "#/dataset/" + id; } },
+    { label: "📂 Open folder", fn: async () => {
+        try { const r = await api("/system/open-folder", { method: "POST", body: JSON.stringify({ dataset_id: id }) }); toast("Opened " + r.opened, "ok"); }
+        catch (e) { toast("Open failed: " + e.message, "err"); } } },
+    { label: "Delete", cls: "danger", fn: () => confirmDeleteDataset(d) },
     { label: "Save", fn: async () => {
-        await api("/datasets/" + id, { method: "PATCH", body: JSON.stringify({
+        const body = {
+          name: $("#dsName").value.trim(), type: $("#dsType").value,
+          organism: $("#dsOrg").value.trim(), study: $("#dsStudy").value.trim(),
           tags: $("#dsTags").value.split(",").map(s => s.trim()).filter(Boolean),
-          notes: $("#dsNotes").value, flagged: $("#dsFlag").checked }) });
+          notes: $("#dsNotes").value, flagged: $("#dsFlag").checked };
+        const setv = $("#dsSet").value;
+        if (setv) body.set_id = +setv; else body.clear_set = true;
+        await api("/datasets/" + id, { method: "PATCH", body: JSON.stringify(body) });
         toast("Saved", "ok"); closeModal(); if (parseHash().view === "datasets") renderDatasets();
       } },
   ]);
+}
+function confirmDeleteDataset(d) {
+  const hasRuns = d.run_count > 0;
+  modal("Delete dataset", `<p>Delete <b>${esc(d.name)}</b>?</p>
+    ${hasRuns ? `<p class="muted" style="font-size:12px;margin-top:8px">This dataset has <b>${d.run_count}</b> run(s). Its runs are provenance records and are never deleted — the dataset will be <b>archived</b> instead (hidden but recoverable).</p>`
+      : `<p class="muted" style="font-size:12px;margin-top:8px">No runs — the dataset record will be removed. Files on disk are not touched.</p>`}`,
+    [{ label: hasRuns ? "Archive" : "Delete", cls: "danger", fn: async () => {
+        try { await api("/datasets/" + d.id, { method: "DELETE" });
+          toast(hasRuns ? "Archived" : "Deleted", "ok"); closeModal();
+          if (parseHash().view === "datasets") renderDatasets();
+        } catch (e) { toast("Failed: " + e.message, "err"); } } }]);
 }
 function qcPill(s) {
   const map = { pass: "succeeded", minor: "canceled", fail: "failed", unreviewed: "queued" };
@@ -290,22 +345,41 @@ function mCard(m) {
     </div>
     <div class="flex" style="margin-top:12px">
       <button class="btn sm primary" onclick="openNewRun(null, ${m.id})">Run…</button>
+      <button class="btn sm ghost" onclick='openRenameModel(${JSON.stringify({ id: m.id, name: m.name, family: m.family, description: m.description || "" })})'>✎ Rename</button>
+      <button class="btn sm ghost" onclick='openRegisterModel(${JSON.stringify(m.family || m.name)})' title="Register another version in this family">＋ Version</button>
       <a class="btn sm ghost" href="#/runs">History</a></div></div>`;
 }
-async function openRegisterModel() {
+window.openRenameModel = function (m) {
+  modal("Rename model", `
+    <div class="field"><label>Display name</label><input class="input" id="rmName" value="${esc(m.name)}">
+      <div class="hint">Independent of the folder name — this is what shows in the UI.</div></div>
+    <div class="field"><label>Description</label><textarea class="input" id="rmDesc" rows="2">${esc(m.description || "")}</textarea></div>
+  `, [{ label: "Save", cls: "primary", fn: async () => {
+      try { await api("/models/" + m.id, { method: "PATCH", body: JSON.stringify({ name: $("#rmName").value.trim(), description: $("#rmDesc").value }) });
+        toast("Renamed", "ok"); closeModal(); renderModels();
+      } catch (e) { toast("Rename failed: " + e.message, "err"); } } }]);
+};
+window.openRegisterModel = async function (familyPreset = null) {
   const cfg = await api("/config");
-  modal("Register a trained model", `
+  const fam = typeof familyPreset === "string" ? familyPreset : "";
+  modal(fam ? `Register a new version of “${esc(fam)}”` : "Register a trained model", `
     <div class="field"><label>Model folder path</label>
       <input class="input" id="mp" placeholder="${esc(cfg.models_root)}/Dataset501_.../nnUNetTrainer__nnUNetPlans__3d_fullres">
       <div class="hint">The folder that directly contains plans.json, dataset.json, and fold_0 … fold_4.</div></div>
-    <div class="field"><label>Family (optional)</label><input class="input" id="mf" placeholder="auto from dataset name"></div>
+    <div class="field"><label>Name (optional)</label><input class="input" id="mn" placeholder="custom display name"></div>
+    <div class="field"><label>Family (optional)</label><input class="input" id="mf" value="${esc(fam)}" placeholder="auto from dataset name"><div class="hint">Reuse a family to add v2, v3, … of the same model.</div></div>
     <div class="field"><label>Version (optional)</label><input class="input" id="mv" placeholder="auto (v1, v2 …)"></div>
-  `, [{ label: "Register", cls: "primary", fn: async () => {
-      try { const m = await api("/models/register", { method: "POST", body: JSON.stringify({ path: $("#mp").value.trim(), family: $("#mf").value.trim() || null, version: $("#mv").value.trim() || null }) });
+  `, [
+    { label: "Scan models root", fn: async () => {
+        try { const r = await api("/system/discover-models", { method: "POST", body: JSON.stringify({}) });
+          toast(`Discovered ${r.registered.length} model(s), ${r.skipped} skipped`, "ok"); closeModal(); renderModels();
+        } catch (e) { toast("Scan failed: " + e.message, "err"); } } },
+    { label: "Register", cls: "primary", fn: async () => {
+      try { const m = await api("/models/register", { method: "POST", body: JSON.stringify({ path: $("#mp").value.trim(), name: $("#mn").value.trim() || null, family: $("#mf").value.trim() || null, version: $("#mv").value.trim() || null }) });
         toast(`Registered ${m.name}`, "ok"); closeModal(); renderModels();
       } catch (e) { toast("Register failed: " + e.message, "err"); }
     } }]);
-}
+};
 
 /* -------------------------------------------------------------------- runs */
 let runFilters = { status: "", qc_status: "", qc_tag: "" };
@@ -330,10 +404,10 @@ async function renderRuns(preset) {
     const byId = Object.fromEntries(rows.map(x => [String(x.id), x]));
     const acts = r => {
       const stop = ["running", "queued", "canceling"].includes(r.status)
-        ? `<button class="ico" title="Stop run" data-stop="${r.id}">■</button>` : "";
-      const del = ["failed", "canceled"].includes(r.status)
-        ? `<button class="ico" title="Delete run" data-del="${r.id}">🗑</button>` : "";
-      return stop + del;
+        ? `<button class="ico danger" title="Stop run" data-stop="${r.id}">■</button>` : "";
+      const arch = ["succeeded", "failed", "canceled"].includes(r.status)
+        ? `<button class="ico danger" title="Archive run (runs are never deleted)" data-arch="${r.id}">🗄</button>` : "";
+      return stop + arch;
     };
     $("#rrows").innerHTML = rows.length ? rows.map(r => `
       <tr onclick="location.hash='#/run/${r.id}'">
@@ -351,8 +425,8 @@ async function renderRuns(preset) {
       try { await api("/runs/" + b.dataset.stop + "/cancel", { method: "POST" }); toast("Stopping run…", "ok"); reload(); }
       catch (err) { b.disabled = false; toast("Stop failed: " + err.message, "err"); }
     });
-    $("#rrows").querySelectorAll("[data-del]").forEach(b => b.onclick = (e) => {
-      e.stopPropagation(); confirmDeleteRun(byId[b.dataset.del] || { id: b.dataset.del, status: "failed" }, reload);
+    $("#rrows").querySelectorAll("[data-arch]").forEach(b => b.onclick = (e) => {
+      e.stopPropagation(); confirmArchiveRun(byId[b.dataset.arch] || { id: b.dataset.arch }, reload);
     });
   };
   $("#fstatus").onchange = e => { runFilters.status = e.target.value; reload(); };
@@ -375,7 +449,8 @@ async function renderRunDetail(id) {
      ${r.status === "succeeded" ? `<button class="btn" id="bmpBtn" title="Save the mask as one BMP per slice, in the run's results folder">🖼 Mask BMPs</button>` : ""}
      <button class="btn" id="expBtn">⭳ Export report</button>
      ${canStop ? `<button class="btn danger" id="stopBtn">■ Stop run</button>` : ""}
-     ${terminal ? `<button class="btn ghost" id="delBtn">🗑 Delete</button>` : ""}
+     ${terminal && !r.archived ? `<button class="btn danger" id="archBtn" title="Runs are never deleted — only archived">🗄 Archive</button>` : ""}
+     ${r.archived ? `<button class="btn ghost" id="unarchBtn">⇤ Unarchive</button>` : ""}
      <a class="btn ghost" href="#/runs">← All runs</a>`;
   const snap = r.model_snapshot || {}, env = r.env || {}, p = r.params || {};
   const summary = [
@@ -409,7 +484,7 @@ async function renderRunDetail(id) {
     wrapCard("parameters", "", kvGrid(params)),
     wrapCard("environment", env.gpu ? `<span class="chip accent">${esc(env.gpu)}</span>` : `<span class="chip">CPU</span>`, envBody),
     wrapCard("qc", "", `<div id="qcInner"></div>`),
-    wrapCard("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log">loading…</div>`),
+    wrapCard("log", `<button class="btn sm ghost" id="reloadLog">reload</button>`, `<div class="logbox" id="log"><span class="spin"></span></div>`),
   ].join("");
 
   const active = ["running", "queued", "canceling"].includes(r.status);
@@ -425,10 +500,22 @@ async function renderRunDetail(id) {
      </div>`;
   const wrap = $("#content");
 
+  // While a run is undergoing there's no mask to show, so the viewer is hidden by
+  // default (a spinner + progress bar take its place). The user can still reveal it
+  // with the Viewer panel chip; that clears the session-only hide for this run.
+  let forceHideViewer = active;
+  const viewerVisible = () => panelShown.has("viewer") && !forceHideViewer;
+
   const applyPanelVisibility = () => {
-    PANEL_KEYS.forEach(k => { const el = wrap.querySelector(`[data-panel="${k}"]`); if (el) el.style.display = panelShown.has(k) ? "" : "none"; });
-    wrap.querySelectorAll(".pchip[data-toggle]").forEach(c => c.classList.toggle("on", panelShown.has(c.dataset.toggle)));
-    const hasLeft = panelShown.has("viewer");
+    PANEL_KEYS.forEach(k => {
+      const on = k === "viewer" ? viewerVisible() : panelShown.has(k);
+      const el = wrap.querySelector(`[data-panel="${k}"]`); if (el) el.style.display = on ? "" : "none";
+    });
+    wrap.querySelectorAll(".pchip[data-toggle]").forEach(c => {
+      const k = c.dataset.toggle;
+      c.classList.toggle("on", k === "viewer" ? viewerVisible() : panelShown.has(k));
+    });
+    const hasLeft = viewerVisible();
     const hasRight = ["summary", "metrics", "parameters", "environment", "qc", "log"].some(k => panelShown.has(k));
     const rl = $("#repLeft"), rs = $("#repSide"), sp = $("#splitter");
     if (rl) rl.style.display = hasLeft ? "" : "none";
@@ -445,7 +532,7 @@ async function renderRunDetail(id) {
   let viewerMounted = false;
   const ensureViewer = () => {
     if (viewerMounted) { if (window.__nv) { try { window.__nv.resizeListener(); } catch { } } return; }
-    if (!panelShown.has("viewer")) return;
+    if (!viewerVisible()) return;
     viewerMounted = true;
     if (r.status === "succeeded") mountViewer([
       { url: `/api/runs/${id}/view_input.nii.gz` },
@@ -460,7 +547,9 @@ async function renderRunDetail(id) {
   };
 
   wrap.querySelectorAll(".pchip[data-toggle]").forEach(b => b.onclick = () => {
-    const k = b.dataset.toggle; panelShown.has(k) ? panelShown.delete(k) : panelShown.add(k);
+    const k = b.dataset.toggle;
+    if (k === "viewer" && forceHideViewer) { forceHideViewer = false; panelShown.add(k); }
+    else { panelShown.has(k) ? panelShown.delete(k) : panelShown.add(k); }
     saveShown(); applyPanelVisibility(); ensureViewer();
   });
   wrap.querySelectorAll("[data-close]").forEach(b => b.onclick = () => {
@@ -509,8 +598,13 @@ async function renderRunDetail(id) {
     try { await api("/runs/" + id + "/cancel", { method: "POST" }); toast("Stopping run…", "ok"); renderRunDetail(id); }
     catch (e) { stopBtn.disabled = false; stopBtn.textContent = "■ Stop run"; toast("Stop failed: " + e.message, "err"); }
   };
-  const delBtn = $("#delBtn");
-  if (delBtn) delBtn.onclick = () => confirmDeleteRun(r, () => { location.hash = "#/runs"; });
+  const archBtn = $("#archBtn");
+  if (archBtn) archBtn.onclick = () => confirmArchiveRun(r, () => { location.hash = "#/runs"; });
+  const unarchBtn = $("#unarchBtn");
+  if (unarchBtn) unarchBtn.onclick = async () => {
+    try { await api("/runs/" + id + "/unarchive", { method: "POST" }); toast("Unarchived", "ok"); renderRunDetail(id); }
+    catch (e) { toast("Failed: " + e.message, "err"); }
+  };
 
   initSplitter();
   const main = document.querySelector(".main"); if (main) main.scrollTop = 0;
@@ -552,19 +646,16 @@ async function renderRunDetail(id) {
   }
 }
 
-function confirmDeleteRun(r, after) {
-  const succeeded = r.status === "succeeded";
-  const body = `<p>Delete <b>run #${r.id}</b>${r.dataset_name ? " · " + esc(r.dataset_name) : ""}${r.model_version ? ` <span class="ver">${esc(r.model_version)}</span>` : ""}? This removes it from the registry.</p>
-    <label class="checkline" style="margin-top:10px"><input type="checkbox" id="delPurge" ${succeeded ? "" : "checked"}> Also delete its result files on disk <span class="muted">(irreversible)</span></label>
-    ${succeeded ? `<p class="muted" style="margin-top:8px;font-size:12px">This run <b>succeeded</b> — ticking the box deletes its mask, preview and BMP stack.</p>` : ""}`;
-  modal("Delete run", body, [{
-    label: "Delete", cls: "danger", fn: async () => {
-      const purge = !!($("#delPurge") && $("#delPurge").checked);
+function confirmArchiveRun(r, after) {
+  const body = `<p>Archive <b>run #${r.id}</b>${r.dataset_name ? " · " + esc(r.dataset_name) : ""}${r.model_version ? ` <span class="ver">${esc(r.model_version)}</span>` : ""}?</p>
+    <p class="muted" style="margin-top:8px;font-size:12px">Runs are the immutable provenance record and are <b>never deleted</b>. Archiving hides it from the default lists; its result files stay on disk and you can unarchive it any time.</p>`;
+  modal("Archive run", body, [{
+    label: "Archive", cls: "danger", fn: async () => {
       try {
-        await api(`/runs/${r.id}?purge=${purge ? "true" : "false"}`, { method: "DELETE" });
-        closeModal(); toast(`Deleted run #${r.id}${purge ? " + files" : ""}`, "ok");
+        await api(`/runs/${r.id}/archive`, { method: "POST" });
+        closeModal(); toast(`Archived run #${r.id}`, "ok");
         if (after) after();
-      } catch (e) { toast("Delete failed: " + e.message, "err"); }
+      } catch (e) { toast("Archive failed: " + e.message, "err"); }
     }
   }]);
 }
@@ -977,18 +1068,34 @@ async function renderInsights() {
 
 /* ------------------------------------------------------------- new-run modal */
 window.openNewRun = async function (datasetIds = null, modelId = null) {
-  const [models, datasets, cfg] = await Promise.all([api("/models"), api("/datasets"), api("/config")]);
+  const [models, datasets, cfg, compute] = await Promise.all([
+    api("/models"), api("/datasets"), api("/config"),
+    api("/system/compute").catch(() => null)]);
   if (!models.length) return toast("Register a model first", "err");
   if (!datasets.length) return toast("Ingest datasets first", "err");
   const sel = new Set(datasetIds || []);
   const modelOpts = models.map(m => `<option value="${m.id}" ${m.id === modelId ? "selected" : ""}>${esc(m.family || m.name)} — ${esc(m.version)} ${m.cross_val_dice ? `(Dice ${m.cross_val_dice.toFixed(3)})` : ""}</option>`).join("");
+  // Pre-run compute readout: what this machine offers + what `auto` would pick.
+  const rec = compute ? compute.recommended_device : null;
+  const gpuLine = compute && compute.gpus && compute.gpus.length
+    ? compute.gpus.map(g => `${esc(g.name)}${g.memory_total_mb ? ` · ${(g.memory_total_mb / 1024).toFixed(0)} GB` : ""}`).join(", ")
+    : "none detected";
+  const computeBox = compute ? `<div class="computebox">
+      <div class="cb-row"><span class="cb-k">This machine</span><span>${esc(compute.host || "—")}</span></div>
+      <div class="cb-row"><span class="cb-k">CPU</span><span>${esc(compute.cpu || "—")} · ${compute.logical_cores || "?"} threads${compute.ram_total_gb ? ` · ${compute.ram_total_gb} GB RAM` : ""}</span></div>
+      <div class="cb-row"><span class="cb-k">GPU</span><span>${gpuLine}</span></div>
+      <div class="cb-row"><span class="cb-k">auto → </span><span><span class="chip ${rec === "cuda" ? "accent" : ""}">${esc(rec || "?")}</span></span></div>
+    </div>` : `<div class="hint">Compute probe unavailable.</div>`;
+  const devList = (compute && compute.devices) || ["auto", "cuda", "cpu"];
+  const devOpts = devList.map(dv => `<option value="${dv}" ${dv === cfg.default_device ? "selected" : ""}>${dv}${dv === "auto" && rec ? ` (→ ${rec})` : ""}</option>`).join("");
   modal("New segmentation run", `
     <div class="field"><label>Model &amp; version</label><select class="input" id="nrModel">${modelOpts}</select></div>
+    <div class="field"><label>Compute available</label>${computeBox}</div>
     <div class="field"><label>Datasets</label>
       <div class="pick" id="nrPick">${datasets.map(d => `<label class="opt"><input type="checkbox" value="${d.id}" ${sel.has(d.id) ? "checked" : ""}> ${esc(d.name)} <span class="muted mono" style="margin-left:auto">${vox(d.voxel_size_um)}</span></label>`).join("")}</div></div>
     <div class="wrap">
       <div class="field" style="flex:1"><label>Folds</label><input class="input" id="nrFolds" value="0"><div class="hint">"0" fast · "0 1 2 3 4" ensemble</div></div>
-      <div class="field" style="flex:1"><label>Device</label><select class="input" id="nrDev"><option value="auto" ${cfg.default_device === "auto" ? "selected" : ""}>auto</option><option>cuda</option><option>cpu</option></select></div>
+      <div class="field" style="flex:1"><label>Device</label><select class="input" id="nrDev">${devOpts}</select></div>
     </div>
     <div class="wrap">
       <div class="field" style="flex:1"><label>Step (overlap)</label><input class="input" id="nrStep" value="0.5"></div>
@@ -1023,6 +1130,278 @@ function modal(title, bodyHtml, actions = []) {
 }
 function closeModal() { $("#modalRoot").innerHTML = ""; }
 
+/* ---------------------------------------------------------------- helpers2 */
+const tagsPills = (tags) => (tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join(" ");
+const parseTags = (s) => (s || "").split(",").map(x => x.trim()).filter(Boolean);
+const TYPE_ICON = { uct: "🦴", scrna: "🧬", spatial: "🗺", omics: "🧪", other: "◆" };
+
+/* ---------------------------------------------------------------- projects */
+async function renderProjects() {
+  $("#pageActions").innerHTML = `<button class="btn primary" id="newProj">＋ New project</button>`;
+  $("#newProj").onclick = () => openProjectForm();
+  const projects = await api("/projects");
+  if (!projects.length) {
+    $("#content").innerHTML = `<div class="empty"><div class="big">▣</div>No projects yet. Click <b>New project</b> to group experiments, datasets, and analyses.</div>`;
+    return;
+  }
+  $("#content").innerHTML = `<div class="grid">${projects.map(p => `
+    <div class="mcard" style="cursor:pointer" onclick="location.hash='#/project/${p.id}'">
+      <div class="top"><div><div class="fam">${esc(p.name)}</div>
+        <div class="wrap" style="margin-top:6px">${tagsPills(p.tags)}</div></div></div>
+      <div class="metrics" style="grid-template-columns:repeat(3,1fr);margin-top:10px">
+        <div class="metric"><div class="k">Experiments</div><div class="v">${p.experiment_count}</div></div>
+        <div class="metric"><div class="k">Datasets</div><div class="v">${p.dataset_count}</div></div>
+        <div class="metric"><div class="k">Analyses</div><div class="v">${p.analysis_count}</div></div>
+      </div>
+      ${p.description ? `<div class="muted" style="margin-top:8px;font-size:12px">${esc(p.description)}</div>` : ""}
+    </div>`).join("")}</div>`;
+}
+
+function openProjectForm(p = null) {
+  modal(p ? "Edit project" : "New project", `
+    <div class="field"><label>Name</label><input class="input" id="pfName" value="${esc(p ? p.name : "")}"></div>
+    <div class="field"><label>Description</label><textarea class="input" id="pfDesc" rows="2">${esc(p ? p.description || "" : "")}</textarea></div>
+    <div class="field"><label>Tags (comma-separated)</label><input class="input" id="pfTags" value="${esc(p ? (p.tags || []).join(", ") : "")}"></div>
+  `, [{ label: p ? "Save" : "Create", cls: "primary", fn: async () => {
+      const body = { name: $("#pfName").value.trim(), description: $("#pfDesc").value, tags: parseTags($("#pfTags").value) };
+      if (!body.name) return toast("Name required", "err");
+      try {
+        if (p) { await api("/projects/" + p.id, { method: "PATCH", body: JSON.stringify(body) }); toast("Saved", "ok"); closeModal(); renderProjectDetail(p.id); }
+        else { const np = await api("/projects", { method: "POST", body: JSON.stringify(body) }); toast("Created", "ok"); closeModal(); location.hash = "#/project/" + np.id; }
+      } catch (e) { toast("Failed: " + e.message, "err"); }
+    } }]);
+}
+
+async function renderProjectDetail(id) {
+  const tree = await api("/projects/" + id + "/tree");
+  $("#pageTitle").textContent = tree.name;
+  $("#pageSub").textContent = tree.description || "";
+  $("#pageActions").innerHTML =
+    `<button class="btn" id="pdEdit">✎ Edit</button>
+     <button class="btn primary" id="pdAddExp">＋ Experiment</button>
+     <button class="btn" id="pdAddAnalysis">＋ Analysis</button>
+     <a class="btn ghost" href="#/projects">← Projects</a>`;
+  $("#pdEdit").onclick = () => openProjectForm({ id, name: tree.name, description: tree.description, tags: tree.tags });
+  $("#pdAddExp").onclick = () => openExperimentForm(id);
+  $("#pdAddAnalysis").onclick = () => openAnalysisForm({ project_id: id });
+
+  const expHtml = tree.experiments.map(e => {
+    const setHtml = e.sets.map(s => `
+      <div class="treeset">
+        <div class="treeset-head">
+          <span class="tset-name">▸ ${esc(s.name)} <span class="muted">(${s.datasets.length})</span></span>
+          <span class="wrap">${tagsPills(s.tags)}
+            <button class="btn sm ghost" data-addds="${s.id}">＋ datasets</button>
+            <button class="btn sm ghost" data-editset="${s.id}" data-setname="${esc(s.name)}" data-setexp="${e.id}">✎</button>
+            <button class="btn sm ghost danger" data-delset="${s.id}">✕</button></span>
+        </div>
+        <div class="treeds">${s.datasets.length ? s.datasets.map(dsRow).join("")
+          : `<div class="muted" style="padding:6px 10px;font-size:12px">No datasets — click “＋ datasets”.</div>`}</div>
+      </div>`).join("");
+    const directHtml = e.datasets.length ? `<div class="treeds">${e.datasets.map(dsRow).join("")}</div>` : "";
+    const anaHtml = e.analyses.length ? `<div class="wrap" style="margin-top:6px">${e.analyses.map(a =>
+      `<button class="chip accent" style="cursor:pointer" onclick="openAnalysisView(${a.id})">📊 ${esc(a.title)}</button>`).join(" ")}</div>` : "";
+    return `<div class="panel" style="margin-bottom:14px">
+      <div class="phead">
+        <h3>${TYPE_ICON[e.type] || "◆"} ${esc(e.name)} <span class="chip">${esc(e.type)}</span></h3>
+        <div class="wrap">
+          <button class="btn sm" data-stats="${e.id}">📈 Stats</button>
+          <button class="btn sm" data-export="${e.id}">⭳ Export</button>
+          <button class="btn sm ghost" data-addset="${e.id}">＋ Set</button>
+          <button class="btn sm ghost" data-editexp="${e.id}" data-expname="${esc(e.name)}" data-exptype="${esc(e.type)}">✎</button>
+          <button class="btn sm ghost danger" data-delexp="${e.id}">✕</button>
+        </div>
+      </div>
+      <div class="pbody">${setHtml || ""}${directHtml}${anaHtml || (setHtml ? "" : `<div class="muted" style="font-size:12px">Empty experiment — add a set or datasets.</div>`)}</div>
+    </div>`;
+  }).join("");
+  const projAna = tree.analyses.length ? `<div class="panel"><div class="phead"><h3>Project analyses</h3></div>
+    <div class="pbody"><div class="wrap">${tree.analyses.map(a =>
+      `<button class="chip accent" style="cursor:pointer" onclick="openAnalysisView(${a.id})">📊 ${esc(a.title)}</button>`).join(" ")}</div></div></div>` : "";
+
+  $("#content").innerHTML = `
+    <div class="wrap" style="margin-bottom:12px">${tagsPills(tree.tags)}</div>
+    ${expHtml || `<div class="empty"><div class="big">🧪</div>No experiments yet. Click <b>＋ Experiment</b>.</div>`}
+    ${projAna}`;
+
+  // wire experiment/set actions
+  const c = $("#content");
+  c.querySelectorAll("[data-addset]").forEach(b => b.onclick = () => openSetForm(+b.dataset.addset));
+  c.querySelectorAll("[data-editexp]").forEach(b => b.onclick = () => openExperimentForm(id, { id: +b.dataset.editexp, name: b.dataset.expname, type: b.dataset.exptype }));
+  c.querySelectorAll("[data-delexp]").forEach(b => b.onclick = () => confirmDel("experiments", +b.dataset.delexp, "experiment", () => renderProjectDetail(id)));
+  c.querySelectorAll("[data-addds]").forEach(b => b.onclick = () => openAssignDatasets(+b.dataset.addds, id));
+  c.querySelectorAll("[data-editset]").forEach(b => b.onclick = () => openSetForm(+b.dataset.setexp, { id: +b.dataset.editset, name: b.dataset.setname }));
+  c.querySelectorAll("[data-delset]").forEach(b => b.onclick = () => confirmDel("sets", +b.dataset.delset, "set", () => renderProjectDetail(id)));
+  c.querySelectorAll("[data-stats]").forEach(b => b.onclick = () => openExperimentStats(+b.dataset.stats));
+  c.querySelectorAll("[data-export]").forEach(b => b.onclick = () => exportExperiment(+b.dataset.export));
+  c.querySelectorAll("[data-ds]").forEach(el => el.onclick = () => openDataset(+el.dataset.ds));
+}
+
+function dsRow(d) {
+  return `<div class="dsrow" data-ds="${d.id}">
+    <span class="dsrow-ic">${TYPE_ICON[d.type] || "◆"}</span>
+    <span class="dsrow-nm">${esc(d.name)}</span>
+    <span class="muted mono">${d.slices ? d.slices + " sl" : ""} ${d.voxel_size_um ? "· " + vox(d.voxel_size_um) : ""}</span>
+    ${(d.tags || []).length ? `<span class="wrap" style="margin-left:auto">${tagsPills(d.tags)}</span>` : ""}
+  </div>`;
+}
+
+function openExperimentForm(projectId, e = null) {
+  const types = ["uct", "scrna", "spatial", "omics", "other"];
+  modal(e ? "Edit experiment" : "New experiment", `
+    <div class="field"><label>Name</label><input class="input" id="efName" value="${esc(e ? e.name : "")}" placeholder="Experiment_002"></div>
+    <div class="field"><label>Type</label><select class="input" id="efType">${types.map(t => `<option ${e && e.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+  `, [{ label: e ? "Save" : "Create", cls: "primary", fn: async () => {
+      const body = { name: $("#efName").value.trim(), type: $("#efType").value };
+      if (!body.name) return toast("Name required", "err");
+      try {
+        if (e) await api("/experiments/" + e.id, { method: "PATCH", body: JSON.stringify(body) });
+        else await api("/experiments", { method: "POST", body: JSON.stringify({ ...body, project_id: projectId }) });
+        toast("Saved", "ok"); closeModal(); renderProjectDetail(projectId);
+      } catch (err) { toast("Failed: " + err.message, "err"); }
+    } }]);
+}
+
+function openSetForm(experimentId, s = null) {
+  modal(s ? "Edit set" : "New set", `
+    <div class="field"><label>Name</label><input class="input" id="sfName" value="${esc(s ? s.name : "")}" placeholder="Set1 [R13 treated]"></div>
+  `, [{ label: s ? "Save" : "Create", cls: "primary", fn: async () => {
+      const body = { name: $("#sfName").value.trim() };
+      if (!body.name) return toast("Name required", "err");
+      try {
+        let expForReload = experimentId;
+        if (s) await api("/sets/" + s.id, { method: "PATCH", body: JSON.stringify(body) });
+        else await api("/sets", { method: "POST", body: JSON.stringify({ ...body, experiment_id: experimentId }) });
+        toast("Saved", "ok"); closeModal();
+        // reload the project the experiment belongs to
+        const exp = (await api("/experiments")).find(x => x.id === experimentId);
+        renderProjectDetail(exp ? exp.project_id : (parseHash().arg));
+      } catch (err) { toast("Failed: " + err.message, "err"); }
+    } }]);
+}
+
+async function openAssignDatasets(setId, projectId) {
+  const [unassigned, sets] = await Promise.all([
+    api("/datasets?unassigned=true"), api("/sets")]);
+  const current = await api("/datasets?set_id=" + setId);
+  const pool = [...current, ...unassigned];
+  if (!pool.length) { toast("No unassigned datasets to add. Ingest first.", "err"); return; }
+  modal("Assign datasets to set", `
+    <div class="hint" style="margin-bottom:8px">Tick datasets to include in this set. Unticking removes them from the set (the dataset itself is kept).</div>
+    <div class="pick" id="adPick">${pool.map(d => `<label class="opt"><input type="checkbox" value="${d.id}" ${d.set_id === setId ? "checked" : ""}> ${TYPE_ICON[d.type] || "◆"} ${esc(d.name)} <span class="muted mono" style="margin-left:auto">${vox(d.voxel_size_um)}</span></label>`).join("")}</div>
+  `, [{ label: "Save", cls: "primary", fn: async () => {
+      const checked = new Set([...document.querySelectorAll("#adPick input:checked")].map(x => +x.value));
+      try {
+        for (const d of pool) {
+          const want = checked.has(d.id);
+          if (want && d.set_id !== setId) await api("/datasets/" + d.id, { method: "PATCH", body: JSON.stringify({ set_id: setId }) });
+          else if (!want && d.set_id === setId) await api("/datasets/" + d.id, { method: "PATCH", body: JSON.stringify({ clear_set: true }) });
+        }
+        toast("Updated set", "ok"); closeModal(); renderProjectDetail(projectId);
+      } catch (e) { toast("Failed: " + e.message, "err"); }
+    } }]);
+}
+
+async function openExperimentStats(expId) {
+  let st;
+  try { st = await api("/experiments/" + expId + "/stats"); }
+  catch (e) { return toast("Stats failed: " + e.message, "err"); }
+  const grp = st.groups.map(g => {
+    const s = g.stats;
+    return `<tr><td>${esc(g.set)}</td><td class="num">${s.n}</td>
+      <td class="num">${s.mean != null ? s.mean.toFixed(4) : "—"}</td>
+      <td class="num">${s.sd != null ? s.sd.toFixed(4) : "—"}</td>
+      <td class="num">${s.min != null ? s.min.toFixed(4) : "—"}</td>
+      <td class="num">${s.max != null ? s.max.toFixed(4) : "—"}</td></tr>`;
+  }).join("");
+  const cmp = st.comparison ? `<div class="mcard" style="margin-top:10px"><div class="kv">
+      <div class="k">Comparison</div><div class="v">${esc(st.comparison.a)} vs ${esc(st.comparison.b)}</div>
+      <div class="k">Mean difference (mm³)</div><div class="v">${st.comparison.mean_diff != null ? st.comparison.mean_diff.toFixed(4) : "—"}</div>
+      <div class="k">Test</div><div class="v">${esc(st.comparison.test || "—")}</div>
+      <div class="k">p-value</div><div class="v">${st.comparison.p_value != null ? st.comparison.p_value.toExponential(2) : (st.comparison.note || "—")}</div>
+      ${st.comparison.mannwhitney_p != null ? `<div class="k">Mann–Whitney p</div><div class="v">${st.comparison.mannwhitney_p.toExponential(2)}</div>` : ""}
+    </div></div>` : `<div class="muted" style="margin-top:8px;font-size:12px">Add a second set with successful runs to get a comparison.</div>`;
+  modal(`Statistics — ${esc(st.experiment)}`, `
+    <div class="hint" style="margin-bottom:6px">Metric: ROI volume (mm³), from each dataset's latest successful run.</div>
+    <table class="tbl"><thead><tr><th>Set</th><th class="right">n</th><th class="right">mean</th><th class="right">sd</th><th class="right">min</th><th class="right">max</th></tr></thead>
+      <tbody>${grp || `<tr><td colspan="6" class="muted">No sets.</td></tr>`}</tbody></table>
+    ${cmp}`, []);
+}
+
+async function exportExperiment(expId) {
+  toast("Building export…");
+  try {
+    const r = await api("/experiments/" + expId + "/export", { method: "POST", body: JSON.stringify({}) });
+    const url = "/api" + r.download.replace("/api", "");
+    const a = document.createElement("a"); a.href = "/api/experiments/" + expId + "/export/download?name=" + encodeURIComponent(r.path.split(/[\\/]/).pop());
+    a.click();
+    toast(`Export ready (${fmtBytes(r.bytes)})`, "ok");
+  } catch (e) { toast("Export failed: " + e.message, "err"); }
+}
+
+function openAnalysisForm(ctx) {
+  modal("New analysis", `
+    <div class="field"><label>Title</label><input class="input" id="afTitle" placeholder="R13 vs CTL"></div>
+    <div class="field"><label>Type / comparison</label><input class="input" id="afType" placeholder="e.g. treated vs control"></div>
+    <div class="field"><label>Files folder (relative to Analyses root)</label><input class="input" id="afPath" placeholder="Project_1/Exp002_R13_vs_CTL"><div class="hint">Where the R code + figure images live on the NAS. Browsed read-only through the app.</div></div>
+    <div class="field"><label>Description</label><textarea class="input" id="afDesc" rows="2"></textarea></div>
+  `, [{ label: "Create", cls: "primary", fn: async () => {
+      const body = { title: $("#afTitle").value.trim(), type: $("#afType").value.trim(), files_relpath: $("#afPath").value.trim() || null, description: $("#afDesc").value, ...ctx };
+      if (!body.title) return toast("Title required", "err");
+      try { await api("/analyses", { method: "POST", body: JSON.stringify(body) }); toast("Analysis added", "ok"); closeModal();
+        if (ctx.project_id) renderProjectDetail(ctx.project_id);
+      } catch (e) { toast("Failed: " + e.message, "err"); }
+    } }]);
+}
+
+window.openAnalysisView = async function (id) {
+  const a = await api("/analyses/" + id);
+  const files = await api("/analyses/" + id + "/files").catch(() => ({ exists: false, figures: [], files: [] }));
+  const figs = files.figures.length ? `<div class="figgrid">${files.figures.map(f =>
+    `<a class="figcard" href="${f.url}" target="_blank"><img src="${f.url}" loading="lazy"><div class="figname">${esc(f.name)}</div></a>`).join("")}</div>`
+    : `<div class="muted" style="font-size:12px">No figure images found${files.exists ? " in this folder" : " — folder not found on this machine"}.</div>`;
+  const code = files.files.length ? `<div class="section-title" style="margin-top:10px">Files</div>
+    <table class="tbl"><tbody>${files.files.map(f => `<tr><td class="mono">${esc(f.name)}</td><td class="num muted">${fmtBytes(f.size)}</td></tr>`).join("")}</tbody></table>` : "";
+  modal(`📊 ${esc(a.title)}`, `
+    ${a.type ? `<div class="chip accent" style="margin-bottom:6px">${esc(a.type)}</div>` : ""}
+    ${a.description ? `<p class="muted">${esc(a.description)}</p>` : ""}
+    <div class="muted mono" style="font-size:11px;margin:6px 0">${esc(files.folder || a.files_relpath || "")}</div>
+    <div class="section-title">Figures</div>${figs}${code}
+  `, [{ label: "Delete analysis", cls: "danger", fn: () => confirmDel("analyses", id, "analysis", () => { closeModal(); if (a.project_id) renderProjectDetail(a.project_id); else route(); }) }]);
+};
+
+function confirmDel(kind, id, label, after) {
+  modal(`Delete ${label}`, `<p>Delete this ${label}? ${kind === "analyses" ? "Only the record is removed — files on the NAS are untouched." : "Datasets and runs are never deleted; they are only unlinked."}</p>`,
+    [{ label: "Delete", cls: "danger", fn: async () => {
+        try { await api("/" + kind + "/" + id, { method: "DELETE" }); toast("Deleted", "ok"); closeModal(); if (after) after(); }
+        catch (e) { toast("Failed: " + e.message, "err"); } } }]);
+}
+
+/* ---------------------------------------------------------------- timeline */
+async function renderTimeline() {
+  const { events } = await api("/timeline");
+  if (!events.length) { $("#content").innerHTML = `<div class="empty"><div class="big">◔</div>Nothing yet.</div>`; return; }
+  const ICON = { dataset: "▦", run: "▶", project: "▣" };
+  const go = { dataset: e => openDataset(e.id), run: e => location.hash = "#/run/" + e.id, project: e => location.hash = "#/project/" + e.id };
+  let lastDay = "";
+  const rows = events.map(e => {
+    const day = e.at ? new Date(e.at).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }) : "—";
+    const head = day !== lastDay ? `<div class="tl-day">${esc(day)}</div>` : "";
+    lastDay = day;
+    return `${head}<div class="tl-item" data-kind="${e.kind}" data-id="${e.id}">
+      <span class="tl-ic ${e.kind}">${ICON[e.kind] || "•"}</span>
+      <span class="tl-title">${esc(e.title)}</span>
+      <span class="tl-detail">${esc(e.detail || "")}${e.dataset ? " · " + esc(e.dataset) : ""}</span>
+      <span class="tl-time muted">${e.at ? new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</span>
+    </div>`;
+  }).join("");
+  $("#content").innerHTML = `<div class="timeline">${rows}</div>`;
+  $("#content").querySelectorAll(".tl-item").forEach(el => el.onclick = () => {
+    const ev = events.find(x => x.kind === el.dataset.kind && String(x.id) === el.dataset.id);
+    if (ev && go[ev.kind]) go[ev.kind](ev);
+  });
+}
+
 /* -------------------------------------------------------------------- boot */
 async function boot() {
   loadLayout();
@@ -1034,11 +1413,18 @@ async function boot() {
     try { localStorage.setItem("mlab_navhide", hid ? "1" : "0"); } catch { }
   };
   try { if (localStorage.getItem("mlab_navhide") === "1") document.querySelector(".app").classList.add("navhidden"); } catch { }
-  try { const c = await api("/config"); $("#sysbox").innerHTML =
+  try {
+    const c = await api("/config");
+    const comp = await api("/system/compute").catch(() => null);
+    const dev = comp ? comp.recommended_device : c.default_device;
+    const gpu = comp && comp.gpus && comp.gpus.length ? comp.gpus[0].name : (dev === "cuda" ? "GPU" : "CPU");
+    $("#sysbox").innerHTML =
     `<b>Storage</b>
      <div class="row"><span>data</span><span title="${esc(c.data_root)}">${esc(c.data_root)}</span></div>
      <div class="row"><span>results</span><span title="${esc(c.results_root)}">${esc(c.results_root)}</span></div>
-     <div class="row"><span>device</span><span>${esc(c.default_device)}</span></div>`; } catch { }
+     ${c.nas_root ? `<div class="row"><span>NAS</span><span title="${esc(c.nas_root)}">${esc(c.nas_root)}</span></div>` : ""}
+     <div class="row"><span>compute</span><span title="${esc(gpu)}">${esc(dev)} · ${esc(gpu)}</span></div>`;
+  } catch { }
   try { VOCAB = (await api("/runs/vocab")).failure_modes; } catch { VOCAB = []; }
   route();
 }
