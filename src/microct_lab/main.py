@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import WEB_DIR
 from .database import init_db
-from .routers import datasets, models, runs, system
+from .routers import analyses, datasets, models, projects, runs, system
 
 app = FastAPI(title="microCT Segmentation Lab", version="0.1.0")
 
@@ -24,6 +24,8 @@ app.include_router(system.router)
 app.include_router(models.router)
 app.include_router(datasets.router)
 app.include_router(runs.router)
+app.include_router(projects.router)
+app.include_router(analyses.router)
 
 # Serve the SPA at "/" (registered last so /api/* routes win).
 app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")

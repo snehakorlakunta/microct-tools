@@ -46,6 +46,7 @@ def _out(r: Run) -> RunOut:
 def list_runs(status: Optional[str] = None, dataset_id: Optional[int] = None,
               model_id: Optional[int] = None, qc_status: Optional[str] = None,
               qc_tag: Optional[str] = None, flagged: Optional[bool] = None,
+              include_archived: bool = False, archived: Optional[bool] = None,
               db: Session = Depends(get_db)):
     stmt = select(Run)
     if status:
@@ -58,6 +59,10 @@ def list_runs(status: Optional[str] = None, dataset_id: Optional[int] = None,
         stmt = stmt.where(Run.qc_status == qc_status)
     if flagged is not None:
         stmt = stmt.where(Run.flagged == flagged)
+    if archived is not None:
+        stmt = stmt.where(Run.archived == archived)
+    elif not include_archived:
+        stmt = stmt.where(Run.archived == False)  # noqa: E712
     stmt = stmt.order_by(Run.created_at.desc())
     rows = db.scalars(stmt).all()
     if qc_tag:  # JSON list membership — filter in Python (small volumes)
@@ -149,23 +154,39 @@ def cancel_run(run_id: int, db: Session = Depends(get_db)):
     return _out(r)
 
 
-@router.delete("/{run_id}")
-def delete_run(run_id: int, purge: bool = False, db: Session = Depends(get_db)):
-    """Delete a run's registry record. With ?purge=true also remove its output
-    folder from disk. In-flight runs must be stopped first."""
+@router.post("/{run_id}/archive", response_model=RunOut)
+def archive_run(run_id: int, db: Session = Depends(get_db)):
+    """Archive a terminal run — it disappears from default views but is never
+    deleted (runs are the immutable provenance record). In-flight runs must be
+    stopped first."""
     r = db.get(Run, run_id)
     if not r:
         raise HTTPException(404, "run not found")
-    if r.status in ("running", "canceling"):
+    if r.status in ("running", "queued", "canceling"):
         raise HTTPException(409, "run is in progress — stop it first")
-    purged = False
-    if purge and r.output_dir and os.path.isdir(r.output_dir):
-        import shutil
-        shutil.rmtree(r.output_dir, ignore_errors=True)
-        purged = not os.path.isdir(r.output_dir)
-    db.delete(r)
+    r.archived = True
     db.commit()
-    return {"deleted": run_id, "purged": purged}
+    db.refresh(r)
+    return _out(r)
+
+
+@router.post("/{run_id}/unarchive", response_model=RunOut)
+def unarchive_run(run_id: int, db: Session = Depends(get_db)):
+    r = db.get(Run, run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    r.archived = False
+    db.commit()
+    db.refresh(r)
+    return _out(r)
+
+
+@router.delete("/{run_id}")
+def delete_run(run_id: int):
+    """Runs are immutable provenance records and cannot be deleted — only
+    archived. Kept as an explicit 405 so old clients get a clear message."""
+    raise HTTPException(405, "runs cannot be deleted — archive it instead "
+                             "(POST /api/runs/{id}/archive)")
 
 
 # ---- files for the viewer (explicit extensions so NiiVue detects the format) ----
