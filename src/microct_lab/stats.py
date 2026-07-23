@@ -11,6 +11,7 @@ import io
 import json
 import math
 import os
+import re
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,15 @@ def _normal_p_two_sided(z: float) -> float:
     return 2.0 * (1.0 - 0.5 * (1.0 + math.erf(abs(z) / math.sqrt(2.0))))
 
 
+def _finite(x):
+    """JSON can't carry NaN/Inf (FastAPI serializes with allow_nan=False and 500s).
+    scipy returns NaN for a zero-variance t-test, so coerce non-finite → None."""
+    try:
+        return x if (x is not None and math.isfinite(x)) else None
+    except TypeError:
+        return None
+
+
 def compare_two(a: list[float], b: list[float]) -> dict:
     """Welch's t-test between two groups. Uses scipy if present for an exact p-value
     (t-distribution + a Mann-Whitney U), else a normal-approximation fallback."""
@@ -56,21 +66,24 @@ def compare_two(a: list[float], b: list[float]) -> dict:
     na, nb = da["n"], db_["n"]
     se = math.sqrt(va / na + vb / nb)
     t = (da["mean"] - db_["mean"]) / se if se > 0 else 0.0
-    out["welch_t"] = t
+    out["welch_t"] = _finite(t)
 
     try:
         from scipy import stats as sstats  # type: ignore
         tt = sstats.ttest_ind(a, b, equal_var=False)
-        out["p_value"] = float(tt.pvalue)
+        out["p_value"] = _finite(float(tt.pvalue))
         out["test"] = "welch_t (scipy)"
         try:
             mw = sstats.mannwhitneyu(a, b, alternative="two-sided")
-            out["mannwhitney_p"] = float(mw.pvalue)
+            out["mannwhitney_p"] = _finite(float(mw.pvalue))
         except ValueError:
             pass
     except Exception:
-        out["p_value"] = _normal_p_two_sided(t)
+        out["p_value"] = _finite(_normal_p_two_sided(t))
         out["test"] = "welch_t (normal approx)"
+    # A zero-variance comparison has no meaningful p-value; say so explicitly.
+    if out.get("p_value") is None and "note" not in out:
+        out["note"] = "identical/zero-variance groups — p-value undefined"
     return out
 
 
@@ -130,6 +143,14 @@ def compare_sets(db: Session, set_id_a: int, set_id_b: int) -> dict:
 
 
 # ------------------------------------------------------------------------ export
+def _safe_component(name: str) -> str:
+    """Make a set/dataset name safe as a single zip path component: strip path
+    separators and '..' so an adversarial name can't produce a zip-slip entry."""
+    cleaned = re.sub(r"[\\/]+", "_", str(name or "")).strip().strip(".")
+    cleaned = cleaned.replace("..", "_")
+    return cleaned or "item"
+
+
 def _add_file(zf: zipfile.ZipFile, path: Optional[str], arcname: str) -> bool:
     if path and os.path.isfile(path):
         try:
@@ -165,7 +186,7 @@ def build_experiment_export(db: Session, experiment_id: int,
                            "voxel_size_um": d.voxel_size_um, "runs": []}
                 for run in db.scalars(select(Run).where(
                         Run.dataset_id == d.id, Run.status == "succeeded")).all():
-                    prefix = f"sets/{s.name}/{d.name}/run{run.id}"
+                    prefix = f"sets/{_safe_component(s.name)}/{_safe_component(d.name)}/run{run.id}"
                     _add_file(zf, run.preview_png, f"{prefix}/preview.png")
                     _add_file(zf, run.log_path, f"{prefix}/run.log")
                     if run.output_dir:

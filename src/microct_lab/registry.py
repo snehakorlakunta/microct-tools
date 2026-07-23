@@ -199,5 +199,8 @@ def discover_models(db: Session, root: Optional[str] = None) -> dict:
             registered.append({"id": m.id, "name": m.name, "family": m.family,
                                "version": m.version})
         except Exception:  # noqa: BLE001 — skip unreadable/partial model folders
+            # A failed commit (e.g. a duplicate Model.name) poisons the session;
+            # roll back so the remaining candidates can still be registered.
+            db.rollback()
             skipped += 1
     return {"root": str(base), "registered": registered, "skipped": skipped}

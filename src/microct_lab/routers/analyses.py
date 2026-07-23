@@ -4,6 +4,7 @@ from __future__ import annotations
 import mimetypes
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -22,9 +23,17 @@ CODE_EXTS = {".r", ".rmd", ".py", ".ipynb", ".sh", ".txt", ".md", ".csv", ".tsv"
 
 
 def _folder(a: Analysis) -> Path:
-    """Absolute folder for this analysis on THIS machine."""
+    """Absolute folder for this analysis on THIS machine.
+
+    `files_relpath` is user-supplied, so the resolved folder is confined to the
+    Analyses root — an absolute or '..'-laden value that escapes the root is
+    rejected (prevents arbitrary-directory listing / file read)."""
+    base = settings.analyses_dir.resolve()
     rel = a.files_relpath or f"analysis_{a.id}"
-    return (settings.analyses_dir / rel).resolve()
+    target = (base / rel).resolve()
+    if target != base and base not in target.parents:
+        raise HTTPException(400, "analysis folder escapes the Analyses root")
+    return target
 
 
 def _safe_join(base: Path, name: str) -> Path:
@@ -111,7 +120,7 @@ def analysis_files(analysis_id: int, db: Session = Depends(get_db)):
         ext = p.suffix.lower()
         entry = {"name": rel, "size": p.stat().st_size, "ext": ext}
         if ext in IMAGE_EXTS:
-            entry["url"] = f"/api/analyses/{analysis_id}/file?name={rel}"
+            entry["url"] = f"/api/analyses/{analysis_id}/file?name={quote(rel)}"
             figures.append(entry)
         else:
             files.append(entry)

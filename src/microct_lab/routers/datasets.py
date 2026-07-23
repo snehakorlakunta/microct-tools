@@ -199,22 +199,21 @@ def patch_dataset(dataset_id: int, body: DatasetPatch, db: Session = Depends(get
 
 
 @router.delete("/{dataset_id}")
-def delete_dataset(dataset_id: int, force: bool = False, db: Session = Depends(get_db)):
-    """Delete a dataset. If it has runs, it is *archived* instead (runs must
-    survive) unless ?force=true — then the row is removed but its runs are
-    archived + detached first, so the immutable run history is never lost."""
+def delete_dataset(dataset_id: int, db: Session = Depends(get_db)):
+    """Delete a dataset. A dataset that has ANY runs is *archived* instead of
+    removed — a run is an immutable provenance record and must survive its
+    dataset, so we never hard-delete a dataset that runs point at. Only a
+    run-free dataset is actually removed from the registry (files untouched)."""
     d = db.get(Dataset, dataset_id)
     if not d:
         raise HTTPException(404, "dataset not found")
     active = [r for r in d.runs if r.status in ("running", "queued", "canceling")]
     if active:
         raise HTTPException(409, "dataset has active runs; stop them first")
-    if d.runs and not force:
+    if d.runs:
         d.archived = True
         db.commit()
         return {"archived": dataset_id, "reason": "has runs (kept for provenance)"}
-    for r in d.runs:
-        r.archived = True
     db.delete(d)
     db.commit()
     return {"deleted": dataset_id}

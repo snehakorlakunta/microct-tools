@@ -81,13 +81,35 @@ class OpenFolderRequest(BaseModel):
     dataset_id: int | None = None
 
 
+def _allowed_roots() -> list[Path]:
+    """Directories a folder-open is allowed to target on this machine."""
+    roots = [settings.data_root, settings.results_root, settings.models_root,
+             settings.analyses_dir, settings.nas_base]
+    out = []
+    for r in roots:
+        try:
+            out.append(Path(r).resolve())
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+def _under_allowed_root(target: Path) -> bool:
+    for root in _allowed_roots():
+        if target == root or root in target.parents:
+            return True
+    return False
+
+
 @router.post("/system/open-folder")
 def open_folder(req: OpenFolderRequest, db: Session = Depends(get_db)):
-    """Open a dataset/analysis folder in the local file manager (this machine).
+    """Open a dataset/analysis FOLDER in the local file manager (this machine).
 
     Intended for the local-lab workflow where the browser and server share a
-    desktop. Resolves a NAS-relative path (portable across drive mappings), a
-    dataset id, or an absolute path — the last only if it exists on this machine.
+    desktop. Hardened: the target must be an existing *directory* that lives
+    under one of the configured roots (data / results / models / analyses / NAS).
+    This prevents the shell 'open' verb from launching an arbitrary executable
+    and stops a path from escaping the known data locations.
     """
     target: Path | None = None
     if req.dataset_id is not None:
@@ -99,8 +121,16 @@ def open_folder(req: OpenFolderRequest, db: Session = Depends(get_db)):
         target = resolve_nas(req.nas_relpath)
     elif req.path:
         target = Path(req.path)
-    if not target or not target.exists():
-        raise HTTPException(404, f"folder not found on this machine: {target}")
+    if not target:
+        raise HTTPException(400, "no target given")
+    try:
+        target = target.resolve()
+    except (OSError, ValueError):
+        raise HTTPException(400, "invalid path")
+    if not target.is_dir():
+        raise HTTPException(404, f"not a folder on this machine: {target}")
+    if not _under_allowed_root(target):
+        raise HTTPException(403, "folder is outside the configured data roots")
 
     try:
         if sys.platform.startswith("win"):

@@ -330,6 +330,12 @@ async function renderModels() {
   $("#content").innerHTML = Object.entries(fams).map(([fam, list]) => `
     <div class="section-title">${esc(fam)}</div>
     <div class="grid">${list.map(mCard).join("")}</div>`).join("");
+  const byId = Object.fromEntries(models.map(m => [String(m.id), m]));
+  $("#content").querySelectorAll("[data-run]").forEach(b => b.onclick = () => openNewRun(null, +b.dataset.run));
+  $("#content").querySelectorAll("[data-rename]").forEach(b => b.onclick = () => openRenameModel(byId[b.dataset.rename]));
+  $("#content").querySelectorAll("[data-version]").forEach(b => {
+    const m = byId[b.dataset.version]; b.onclick = () => openRegisterModel(m.family || m.name);
+  });
 }
 function mCard(m) {
   return `<div class="mcard">
@@ -344,9 +350,9 @@ function mCard(m) {
       <div class="k">Added</div><div class="v">${fmtDate(m.created_at)}</div>
     </div>
     <div class="flex" style="margin-top:12px">
-      <button class="btn sm primary" onclick="openNewRun(null, ${m.id})">Run…</button>
-      <button class="btn sm ghost" onclick='openRenameModel(${JSON.stringify({ id: m.id, name: m.name, family: m.family, description: m.description || "" })})'>✎ Rename</button>
-      <button class="btn sm ghost" onclick='openRegisterModel(${JSON.stringify(m.family || m.name)})' title="Register another version in this family">＋ Version</button>
+      <button class="btn sm primary" data-run="${m.id}">Run…</button>
+      <button class="btn sm ghost" data-rename="${m.id}">✎ Rename</button>
+      <button class="btn sm ghost" data-version="${m.id}" title="Register another version in this family">＋ Version</button>
       <a class="btn sm ghost" href="#/runs">History</a></div></div>`;
 }
 window.openRenameModel = function (m) {
