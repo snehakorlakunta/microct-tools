@@ -23,6 +23,7 @@ class ModelOut(BaseModel):
     source_dataset: Optional[str] = None
     num_training_cases: Optional[int] = None
     description: Optional[str] = None
+    archived: bool = False
     created_at: dt.datetime
 
 
@@ -32,6 +33,11 @@ class DatasetOut(BaseModel):
     name: str
     slices_path: str
     pattern: str
+    type: str = "uct"
+    organism: Optional[str] = None
+    set_id: Optional[int] = None
+    experiment_id: Optional[int] = None
+    nas_relpath: Optional[str] = None
     scanner: Optional[str] = None
     voxel_size_um: Optional[float] = None
     width: Optional[int] = None
@@ -48,6 +54,7 @@ class DatasetOut(BaseModel):
     size_bytes: Optional[int] = None
     notes: Optional[str] = None
     flagged: bool = False
+    archived: bool = False
     created_at: dt.datetime
     run_count: int = 0
 
@@ -85,9 +92,65 @@ class RunOut(BaseModel):
     qc_tags: list = []
     rating: Optional[int] = None
     flagged: bool = False
+    archived: bool = False
     review_note: Optional[str] = None
     dataset_name: Optional[str] = None
     model_name: Optional[str] = None
+
+
+# ---- projects / experiments / sets / analyses ----
+
+class ProjectOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    description: Optional[str] = None
+    tags: list = []
+    archived: bool = False
+    created_at: dt.datetime
+    experiment_count: int = 0
+    dataset_count: int = 0
+    analysis_count: int = 0
+
+
+class ExperimentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    name: str
+    type: str = "uct"
+    description: Optional[str] = None
+    tags: list = []
+    created_at: dt.datetime
+    set_count: int = 0
+    dataset_count: int = 0
+
+
+class SetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    experiment_id: int
+    name: str
+    description: Optional[str] = None
+    tags: list = []
+    created_at: dt.datetime
+    dataset_count: int = 0
+
+
+class AnalysisOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: Optional[int] = None
+    experiment_id: Optional[int] = None
+    title: str
+    type: Optional[str] = None
+    description: Optional[str] = None
+    files_relpath: Optional[str] = None
+    dataset_ids: list = []
+    set_ids: list = []
+    run_ids: list = []
+    tags: list = []
+    created_at: dt.datetime
 
 
 # ---- request bodies ----
@@ -115,9 +178,101 @@ class RegisterModelRequest(BaseModel):
     version: Optional[str] = None
 
 
+class ModelPatch(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    name: Optional[str] = None
+    description: Optional[str] = None
+    archived: Optional[bool] = None
+
+
 class RunReview(BaseModel):
     qc_status: Optional[str] = None
     qc_tags: Optional[list] = None
     rating: Optional[int] = None
     flagged: Optional[bool] = None
     review_note: Optional[str] = None
+
+
+class ProjectIn(BaseModel):
+    name: str
+    description: Optional[str] = None
+    tags: Optional[list] = None
+
+
+class ProjectPatch(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[list] = None
+    archived: Optional[bool] = None
+
+
+class ExperimentIn(BaseModel):
+    project_id: int
+    name: str
+    type: str = "uct"
+    description: Optional[str] = None
+    tags: Optional[list] = None
+
+
+class ExperimentPatch(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[list] = None
+    project_id: Optional[int] = None
+
+
+class SetIn(BaseModel):
+    experiment_id: int
+    name: str
+    description: Optional[str] = None
+    tags: Optional[list] = None
+
+
+class SetPatch(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[list] = None
+    experiment_id: Optional[int] = None
+
+
+class AnalysisIn(BaseModel):
+    title: str
+    project_id: Optional[int] = None
+    experiment_id: Optional[int] = None
+    type: Optional[str] = None
+    description: Optional[str] = None
+    files_relpath: Optional[str] = None
+    dataset_ids: Optional[list] = None
+    set_ids: Optional[list] = None
+    run_ids: Optional[list] = None
+    tags: Optional[list] = None
+
+
+class AnalysisPatch(BaseModel):
+    title: Optional[str] = None
+    project_id: Optional[int] = None
+    experiment_id: Optional[int] = None
+    type: Optional[str] = None
+    description: Optional[str] = None
+    files_relpath: Optional[str] = None
+    dataset_ids: Optional[list] = None
+    set_ids: Optional[list] = None
+    run_ids: Optional[list] = None
+    tags: Optional[list] = None
+
+
+class DatasetPatch(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    organism: Optional[str] = None
+    set_id: Optional[int] = None
+    experiment_id: Optional[int] = None
+    tags: Optional[list] = None
+    notes: Optional[str] = None
+    flagged: Optional[bool] = None
+    archived: Optional[bool] = None
+    study: Optional[str] = None
+    # Use a sentinel-free approach: absent = leave, present-null = clear membership
+    clear_set: Optional[bool] = None
+    clear_experiment: Optional[bool] = None

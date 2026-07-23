@@ -20,6 +20,24 @@ def _safe(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_") or "item"
 
 
+# --------------------------------------------------------------------------- NAS paths
+def nas_relpath_for(abs_path: str | Path) -> Optional[str]:
+    """Path of `abs_path` relative to the NAS base ("Ultron"), using forward
+    slashes so it round-trips across OSes. Returns None if it's outside the base."""
+    try:
+        rel = Path(abs_path).resolve().relative_to(settings.nas_base.resolve())
+        return rel.as_posix()
+    except (ValueError, OSError):
+        return None
+
+
+def resolve_nas(relpath: Optional[str]) -> Optional[Path]:
+    """Resolve a stored NAS-relative path to an absolute path on THIS machine."""
+    if not relpath:
+        return None
+    return (settings.nas_base / relpath).resolve()
+
+
 # --------------------------------------------------------------------------- models
 def register_model(db: Session, path: str, name: Optional[str] = None,
                    family: Optional[str] = None, version: Optional[str] = None) -> Model:
@@ -106,6 +124,7 @@ def ingest_root(db: Session, root: Optional[str] = None) -> dict:
         ds.log = raw
         ds.size_bytes = size
         ds.thumbnail = _thumbnail(name, slices)
+        ds.nas_relpath = nas_relpath_for(folder)
         db.commit()
         db.refresh(ds)
         (created if is_new else updated).append(ds.name)
@@ -144,3 +163,41 @@ def enqueue_runs(db: Session, dataset_ids: list[int], model_id: int, *,
     for r in runs:
         db.refresh(r)
     return runs
+
+
+# ----------------------------------------------------------------- model discovery
+def _looks_like_model(folder: Path) -> bool:
+    """A trained nnU-Net model folder has a plans.json and at least one fold."""
+    return (folder / "plans.json").exists() and any(folder.glob("fold_*"))
+
+
+def discover_models(db: Session, root: Optional[str] = None) -> dict:
+    """Scan MICROCT_MODELS_ROOT for trained model folders and register any new ones.
+
+    This is the counterpart to dataset ingest: it wires the models root from .env
+    into the registry so models don't have to be added one path at a time.
+    """
+    base = Path(root or settings.models_root)
+    registered, skipped = [], 0
+    if not base.exists():
+        return {"root": str(base), "registered": registered, "skipped": skipped,
+                "error": "models root does not exist"}
+    # A model folder itself, or any subfolder, may be the trained model.
+    candidates = [base] if _looks_like_model(base) else []
+    for sub in sorted(base.rglob("plans.json")):
+        folder = sub.parent
+        if _looks_like_model(folder):
+            candidates.append(folder)
+    seen: set[str] = set()
+    for folder in candidates:
+        key = str(folder.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            m = register_model(db, str(folder))
+            registered.append({"id": m.id, "name": m.name, "family": m.family,
+                               "version": m.version})
+        except Exception:  # noqa: BLE001 — skip unreadable/partial model folders
+            skipped += 1
+    return {"root": str(base), "registered": registered, "skipped": skipped}
