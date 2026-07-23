@@ -11,11 +11,14 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent.parent          # src/microct_lab -> src -> <repo>
 DEFAULT_SCRIPTS_DIR = REPO_ROOT / "scripts"
 WEB_DIR = PACKAGE_DIR / "web"
+# Absolute path so the .env is found no matter what the process CWD is (uvicorn,
+# the worker, tests, or a service manager may launch from anywhere).
+ENV_FILE = REPO_ROOT / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="MICROCT_", env_file=".env", extra="ignore",
+        env_prefix="MICROCT_", env_file=str(ENV_FILE), extra="ignore",
         protected_namespaces=(),
     )
 
@@ -24,6 +27,13 @@ class Settings(BaseSettings):
     results_root: Path = Path.home() / "microct_lab_data" / "results"
     models_root: Path = Path.home() / "microct_lab_data" / "models"
     state_dir: Path = Path.home() / "microct_lab_data" / "state"
+
+    # Shared NAS ("Ultron") root as mapped ON THIS MACHINE. Dataset/analysis paths
+    # are stored NAS-relative so they survive a different drive letter per machine;
+    # they resolve against this root. Empty -> NAS features fall back to data_root.
+    nas_root: Optional[Path] = None
+    # Root that holds analysis folders (R code + figures). Defaults to nas_root/Analyses.
+    analyses_root: Optional[Path] = None
 
     db_url: Optional[str] = None
     segment_script: Path = DEFAULT_SCRIPTS_DIR / "segment_microct.py"
@@ -37,6 +47,19 @@ class Settings(BaseSettings):
     @property
     def thumbs_dir(self) -> Path:
         return self.state_dir / "thumbnails"
+
+    @property
+    def analyses_dir(self) -> Path:
+        if self.analyses_root:
+            return Path(self.analyses_root)
+        if self.nas_root:
+            return Path(self.nas_root) / "Analyses"
+        return Path(self.state_dir) / "analyses"
+
+    @property
+    def nas_base(self) -> Path:
+        """Root that NAS-relative paths resolve against on this machine."""
+        return Path(self.nas_root) if self.nas_root else Path(self.data_root)
 
     @property
     def database_url(self) -> str:
