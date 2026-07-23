@@ -194,10 +194,13 @@ flowchart TD
 
 ---
 
-## 5. Proposed hierarchy (planned edits — not yet built)
+## 5. Project hierarchy (implemented on branch `feature/projects-and-ux`)
 
-The requested Project → Experiment → Set → File model, with Analysis nodes and
-mixed dataset types (µCT, scRNA, spatial). Shown here so the target is concrete.
+The requested Project → Experiment → Set → Dataset model, with Analysis nodes and
+mixed dataset types (µCT, scRNA, spatial). These tables now exist in
+`models.py` (`Project`, `Experiment`, `DatasetSet`, `Analysis`); `Dataset` gained
+`type`, `organism`, `set_id`, `experiment_id`, `nas_relpath`, `archived`; `Run` and
+`Model` gained `archived`.
 
 ```mermaid
 erDiagram
@@ -263,6 +266,7 @@ flowchart TD
     E2 --> A3["Analysis [R13+NR vs CTL: S3 vs S2]"]
 ```
 
-> **Note:** This section is the design target for the Projects/Experiments work
-> (Tier 3). The exact tables should be finalized before implementation, since a
-> wrong hierarchy is expensive to undo.
+> **Note:** All hierarchy FKs are nullable — an ingested dataset starts
+> unassigned and is organized into a set/experiment later. Datasets and runs are
+> never destroyed by deleting a project, experiment, or set: those operations only
+> unlink (null the FK). Runs can be archived but never deleted.

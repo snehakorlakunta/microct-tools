@@ -1269,7 +1269,6 @@ function openSetForm(experimentId, s = null) {
       const body = { name: $("#sfName").value.trim() };
       if (!body.name) return toast("Name required", "err");
       try {
-        let expForReload = experimentId;
         if (s) await api("/sets/" + s.id, { method: "PATCH", body: JSON.stringify(body) });
         else await api("/sets", { method: "POST", body: JSON.stringify({ ...body, experiment_id: experimentId }) });
         toast("Saved", "ok"); closeModal();
@@ -1332,8 +1331,9 @@ async function exportExperiment(expId) {
   toast("Building export…");
   try {
     const r = await api("/experiments/" + expId + "/export", { method: "POST", body: JSON.stringify({}) });
-    const url = "/api" + r.download.replace("/api", "");
-    const a = document.createElement("a"); a.href = "/api/experiments/" + expId + "/export/download?name=" + encodeURIComponent(r.path.split(/[\\/]/).pop());
+    const name = r.path.split(/[\\/]/).pop();
+    const a = document.createElement("a");
+    a.href = "/api/experiments/" + expId + "/export/download?name=" + encodeURIComponent(name);
     a.click();
     toast(`Export ready (${fmtBytes(r.bytes)})`, "ok");
   } catch (e) { toast("Export failed: " + e.message, "err"); }
