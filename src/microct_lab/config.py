@@ -44,6 +44,31 @@ class Settings(BaseSettings):
     default_device: str = "auto"
     poll_seconds: float = 2.0
 
+    # --- Remote frontend access -------------------------------------------------
+    # A frontend hosted elsewhere (e.g. a Vercel-deployed Next.js build) runs in
+    # the user's browser and calls THIS server on localhost. Its origin must be
+    # allowed explicitly; comma-separated, no trailing slash. Example:
+    #   MICROCT_ALLOWED_ORIGINS=https://microctweb.vercel.app
+    allowed_origins: str = ""
+    # Shared secret required in `Authorization: Bearer <token>` on /api/*.
+    # REQUIRED whenever allowed_origins names a non-local origin: it is what stops
+    # an arbitrary website from driving this API, and because it is a custom header
+    # it also forces a CORS preflight on every request (so no "simple request" can
+    # mutate state without passing the origin check first).
+    api_token: Optional[str] = None
+
+    @property
+    def extra_origins(self) -> list[str]:
+        return [o.strip().rstrip("/") for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def remote_origins(self) -> list[str]:
+        """Allowed origins that are NOT localhost — these are the ones that make
+        an auth token mandatory."""
+        import re
+        local = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$")
+        return [o for o in self.extra_origins if not local.match(o)]
+
     @property
     def thumbs_dir(self) -> Path:
         return self.state_dir / "thumbnails"

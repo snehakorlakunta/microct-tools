@@ -1,7 +1,14 @@
-"""DB-backed job worker: polls for queued runs and executes segmentation, one at a time.
+"""DB-backed job worker: polls for queued jobs and executes them, one at a time.
+
+Two job kinds share this loop:
+  * segmentation — a queued Run, executed via scripts/segment_microct.py (GPU)
+  * measurement  — a queued Measurement, executed via scripts/measure_morphometry.py
+                   (CPU-only morphometry over a finished segmentation)
 
 Cross-platform (Windows/Linux), no Redis/broker. Run alongside the web server:
-    microct-worker
+    microct-worker                      # both kinds (default)
+    microct-worker --kind segmentation  # GPU box
+    microct-measure-worker              # CPU box, measurements only
 """
 from __future__ import annotations
 
@@ -14,10 +21,16 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from .config import settings
+from .config import DEFAULT_SCRIPTS_DIR, settings
 from .database import SessionLocal, init_db
-from .models import Dataset, Model, Run
+from .models import Dataset, Measurement, Model, Run
+from .registry import spacing_um_for
 from .sysinfo import host_info
+
+# The measurement driver. Read through getattr so that if `measure_script` is ever
+# added to Settings it wins, without this module requiring it to exist today.
+MEASURE_SCRIPT = Path(getattr(settings, "measure_script",
+                              DEFAULT_SCRIPTS_DIR / "measure_morphometry.py"))
 
 
 def _claim_next(db) -> Run | None:
@@ -31,7 +44,20 @@ def _claim_next(db) -> Run | None:
     return run
 
 
-def _finish(db, run: Run, status: str, error: str | None = None) -> None:
+def _claim_next_measurement(db) -> Measurement | None:
+    m = db.scalar(select(Measurement).where(Measurement.status == "queued")
+                  .order_by(Measurement.created_at))
+    if m is None:
+        return None
+    m.status = "running"
+    m.started_at = datetime.utcnow()
+    db.commit()
+    db.refresh(m)
+    return m
+
+
+def _finish(db, run, status: str, error: str | None = None) -> None:
+    """Terminate a job row (Run or Measurement — they share these columns)."""
     run.status = status
     run.error = error
     run.ended_at = datetime.utcnow()
@@ -58,16 +84,20 @@ def _kill_tree(pid: int) -> None:
             pass
 
 
-def _cancel_requested(run_id: int) -> bool:
-    """Fresh read on its own session so a status change committed by the API is seen."""
+def _cancel_requested(run_id: int, model_cls=Run) -> bool:
+    """Fresh read on its own session so a status change committed by the API is seen.
+
+    Parameterized on the job's model class so the same poll serves Runs and
+    Measurements (both carry a `status` that the API flips to 'canceling')."""
     try:
         with SessionLocal() as s:
-            return s.scalar(select(Run.status).where(Run.id == run_id)) == "canceling"
+            return s.scalar(select(model_cls.status)
+                            .where(model_cls.id == run_id)) == "canceling"
     except Exception:  # noqa: BLE001
         return False
 
 
-def _run_subprocess(cmd, log_path, run_id) -> tuple[int, bool]:
+def _run_subprocess(cmd, log_path, run_id, model_cls=Run) -> tuple[int, bool]:
     """Run cmd, streaming output to log_path, while polling for an API cancel
     request. Returns (returncode, canceled)."""
     with open(log_path, "w", encoding="utf-8") as lf:
@@ -80,7 +110,7 @@ def _run_subprocess(cmd, log_path, run_id) -> tuple[int, bool]:
                 return proc.returncode, False
             except subprocess.TimeoutExpired:
                 pass
-            if _cancel_requested(run_id):
+            if _cancel_requested(run_id, model_cls):
                 _kill_tree(proc.pid)
                 try:
                     proc.wait(timeout=10)
@@ -156,36 +186,166 @@ def _execute(db, run: Run) -> None:
         _finish(db, run, "failed", f"exit code {returncode}\n{tail}")
 
 
+def _execute_measurement(db, m: Measurement) -> None:
+    """Run the morphometry pipeline over a finished segmentation.
+
+    Mirrors _execute: stamp the environment up front so even a failure is
+    traceable, stream the driver's stdout to a log, then fold
+    <case>_measurement.json back into the row.
+    """
+    run = db.get(Run, m.run_id)
+    if run is None:
+        _finish(db, m, "failed", "run missing")
+        return
+
+    p = dict(m.params or {})
+    case = p.get("case") or _case_from_run(run)
+    mask = p.get("mask_nii") or run.mask_nii
+    image = p.get("input_nii") or run.input_nii
+    if not mask or not os.path.exists(mask):
+        _finish(db, m, "failed", f"mask not found: {mask}")
+        return
+    if not image or not os.path.exists(image):
+        _finish(db, m, "failed", f"input volume not found: {image}")
+        return
+    if not MEASURE_SCRIPT.exists():
+        _finish(db, m, "failed", f"measurement driver not found: {MEASURE_SCRIPT}")
+        return
+
+    out = Path(m.output_dir or (Path(settings.results_root) / f"{case}__morph__m{m.id}"))
+    out.mkdir(parents=True, exist_ok=True)
+    m.output_dir = str(out)
+    log_path = out / "measure.log"
+    m.log_path = str(log_path)
+    m.env = host_info()
+    m.host = m.env.get("host")
+    db.commit()
+
+    # Fall back to the RUN's own spacing, never the dataset's current value — see
+    # registry.spacing_um_for for why the two can legitimately disagree.
+    spacing_um = p.get("spacing_um") or spacing_um_for(run, db.get(Dataset, m.dataset_id))
+    cmd = [
+        settings.python, str(MEASURE_SCRIPT),
+        "--mask", str(mask),
+        "--image", str(image),
+        "--case", str(case),
+        "--out", str(out),
+        "--pipeline", str(m.pipeline_version or "digitpipe_v5"),
+        "--spacing-um", str(spacing_um),
+    ]
+    if p.get("skip_viz"):
+        cmd.append("--skip-viz")
+
+    returncode, canceled = _run_subprocess(cmd, log_path, m.id, Measurement)
+    if canceled:
+        _finish(db, m, "canceled", "aborted by user")
+        return
+
+    result_json = out / f"{case}_measurement.json"
+    if returncode == 0 and result_json.exists():
+        r = json.loads(result_json.read_text(encoding="utf-8"))
+        metrics = r.get("metrics") or {}
+        m.metrics = metrics
+        for col in ("socket_volume_voxels", "socket_volume_mm3", "socket_radius_voxels",
+                    "socket_radius_mm", "phalanx_volume_voxels", "phalanx_volume_mm3",
+                    "bone_length_voxels", "bone_length_mm",
+                    "euclidean_distance_voxels", "euclidean_distance_mm"):
+            v = metrics.get(col)
+            setattr(m, col, float(v) if isinstance(v, (int, float)) else None)
+        centroid = metrics.get("socket_centroid")
+        m.socket_centroid = centroid if isinstance(centroid, list) else None
+        m.annotated_nii = r.get("annotated_nii")
+        m.xlsx_path = r.get("xlsx_path")
+        if r.get("pipeline_version"):
+            m.pipeline_version = r["pipeline_version"]
+        # Merge the compute-side debrief (versions, peak memory, timings).
+        rec = dict(m.env or {})
+        rec.update(r.get("environment", {}))
+        m.env = rec
+        m.host = rec.get("host") or m.host
+        _finish(db, m, "succeeded")
+    else:
+        tail = ""
+        try:
+            tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-8:])
+        except OSError:
+            pass
+        _finish(db, m, "failed", f"exit code {returncode}\n{tail}")
+
+
 def _case(name: str) -> str:
     import re
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "case"
 
 
-def run_worker() -> None:
+def _case_from_run(run: Run) -> str:
+    """Case name a run's outputs are prefixed with (derived from the mask file, so
+    it always matches the files on disk). Falls back to the dataset name."""
+    if run.mask_nii:
+        b = os.path.basename(run.mask_nii)
+        for ext in (".nii.gz", ".nii"):
+            if b.endswith(ext):
+                return b[: -len(ext)]
+    return _case(run.dataset.name) if run.dataset else f"run{run.id}"
+
+
+KINDS = ("all", "segmentation", "measurement")
+
+
+def run_worker(kind: str = "all") -> None:
+    if kind not in KINDS:
+        raise SystemExit(f"unknown --kind {kind!r} (expected one of {', '.join(KINDS)})")
+    do_seg = kind in ("all", "segmentation")
+    do_measure = kind in ("all", "measurement")
+
     init_db()
     db = SessionLocal()
-    # Recover runs left mid-flight by a previous crash.
-    for stale in db.scalars(select(Run).where(Run.status.in_(["running", "canceling"]))).all():
-        if stale.status == "canceling":
-            _finish(db, stale, "canceled", "aborted by user")
-        else:
-            _finish(db, stale, "failed", "worker restarted while this run was in progress")
-    print(f"[worker] ready. polling every {settings.poll_seconds}s. "
+    # Recover jobs left mid-flight by a previous crash — but only of the kinds THIS
+    # worker handles, so a CPU measurement worker never touches the GPU worker's
+    # in-flight runs.
+    if do_seg:
+        for stale in db.scalars(select(Run).where(Run.status.in_(["running", "canceling"]))).all():
+            if stale.status == "canceling":
+                _finish(db, stale, "canceled", "aborted by user")
+            else:
+                _finish(db, stale, "failed", "worker restarted while this run was in progress")
+    if do_measure:
+        for stale in db.scalars(select(Measurement).where(
+                Measurement.status.in_(["running", "canceling"]))).all():
+            if stale.status == "canceling":
+                _finish(db, stale, "canceled", "aborted by user")
+            else:
+                _finish(db, stale, "failed",
+                        "worker restarted while this measurement was in progress")
+    print(f"[worker] ready ({kind}). polling every {settings.poll_seconds}s. "
           f"results -> {settings.results_root}", flush=True)
     try:
         while True:
-            run = _claim_next(db)
-            if run is None:
-                time.sleep(settings.poll_seconds)
+            run = _claim_next(db) if do_seg else None
+            if run is not None:
+                print(f"[worker] run {run.id}: dataset={run.dataset_id} model={run.model_id} "
+                      f"({run.model_version})", flush=True)
+                try:
+                    _execute(db, run)
+                    print(f"[worker] run {run.id}: {run.status}", flush=True)
+                except Exception as e:  # noqa: BLE001
+                    _finish(db, run, "failed", f"{type(e).__name__}: {e}")
+                    print(f"[worker] run {run.id} failed: {e}", flush=True)
                 continue
-            print(f"[worker] run {run.id}: dataset={run.dataset_id} model={run.model_id} "
-                  f"({run.model_version})", flush=True)
-            try:
-                _execute(db, run)
-                print(f"[worker] run {run.id}: {run.status}", flush=True)
-            except Exception as e:  # noqa: BLE001
-                _finish(db, run, "failed", f"{type(e).__name__}: {e}")
-                print(f"[worker] run {run.id} failed: {e}", flush=True)
+
+            meas = _claim_next_measurement(db) if do_measure else None
+            if meas is not None:
+                print(f"[worker] measurement {meas.id}: run={meas.run_id} "
+                      f"dataset={meas.dataset_id} ({meas.pipeline_version})", flush=True)
+                try:
+                    _execute_measurement(db, meas)
+                    print(f"[worker] measurement {meas.id}: {meas.status}", flush=True)
+                except Exception as e:  # noqa: BLE001
+                    _finish(db, meas, "failed", f"{type(e).__name__}: {e}")
+                    print(f"[worker] measurement {meas.id} failed: {e}", flush=True)
+                continue
+
+            time.sleep(settings.poll_seconds)
     except KeyboardInterrupt:
         print("[worker] stopping.", flush=True)
     finally:

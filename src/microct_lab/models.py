@@ -227,3 +227,68 @@ class Run(Base):
 
     dataset: Mapped["Dataset"] = relationship(back_populates="runs")
     model: Mapped["Model"] = relationship(back_populates="runs")
+    # NOTE: no delete-orphan cascade — mirrors Dataset.runs. A Measurement is an
+    # immutable provenance record that must survive its Run (archive, never delete).
+    measurements: Mapped[list["Measurement"]] = relationship(back_populates="run")
+
+
+class Measurement(Base):
+    """A morphometry measurement job: the perios digitpipe run over a finished
+    segmentation. One Measurement per (Run, pipeline_version) attempt.
+
+    Segmentation answers "which voxels are the digit"; this answers "how big is the
+    socket, how long is the bone". It is CPU-only, so it can be worked by a separate
+    `microct-measure-worker` alongside the GPU segmentation worker.
+    """
+    __tablename__ = "measurements"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), index=True)
+    # Denormalized from the Run so the common "all measurements for dataset X"
+    # query needs no join.
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), index=True)
+
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)  # queued|running|succeeded|failed|canceled
+    pipeline_version: Mapped[str] = mapped_column(String(64), default="digitpipe_v5", index=True)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    started_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    duration_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # --- headline metrics, promoted out of `metrics` for filtering/aggregation ---
+    socket_volume_voxels: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    socket_volume_mm3: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    socket_radius_voxels: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    socket_radius_mm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    socket_centroid: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)  # [i, j, k] voxels
+    phalanx_volume_voxels: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    phalanx_volume_mm3: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bone_length_voxels: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bone_length_mm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    euclidean_distance_voxels: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    euclidean_distance_mm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # The full flat metric dict from <case>_measurement.json (hull, shrink-wrap,
+    # major axis, BV/TV, line inside/outside, and anything else the pipeline emits).
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    output_dir: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    log_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    # The 7-class annotated label volume for NiiVue (1 bone, 2 socket, 3 line
+    # outside bone, 4 line inside bone, 5 furthest point, 6 socket COM,
+    # 7 first intersection).
+    annotated_nii: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    xlsx_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+
+    env: Mapped[dict] = mapped_column(JSON, default=dict)
+    host: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+
+    # --- QC ---
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    flagged: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    run: Mapped["Run"] = relationship(back_populates="measurements")

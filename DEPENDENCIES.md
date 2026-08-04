@@ -134,9 +134,70 @@ For a CUDA build, add `--index-url https://download.pytorch.org/whl/cu121` to th
 
 ---
 
-## 4. Summary
+## 4. The morphometry engine (`[morph]`) — NOT bundled either
+
+The **morphometry measurement** job type (socket volume/radius, phalanx volume,
+bone length — the vendored `scripts/perios/digitpipe_v5` pipeline) is **CPU‑only**
+and does not need torch, but it does need a scientific‑Python stack that is **not**
+in the offline wheelhouse.
+
+> ⚠️ **The bundled `.\dependencies` wheelhouse does NOT contain the `[morph]`
+> packages.** On a fresh, offline machine the dashboard and segmentation will
+> install fine, but **enqueuing a measurement will fail** until the wheelhouse is
+> refreshed (or the packages are installed from PyPI). Refresh it before relying on
+> the morphometry feature offline.
+
+Install online:
+
+```
+pip install -e ".[morph]"
+```
+
+That pulls: `nibabel`, `scipy`, `scikit-image`, `scikit-learn`, `trimesh`,
+`pandas`, `openpyxl`.
+
+> `scikit-learn` is **required** — the vendored `digitpipe_v5/utils.py` imports
+> `sklearn.decomposition.PCA` at module level, so the pipeline cannot even import
+> without it. `trimesh` is currently unused by any vendored file.
+
+### Refresh the offline wheelhouse to include morphometry
+
+On a Windows + Python 3.12 machine with internet, from the app folder:
+
+```
+python -m pip download -d dependencies nibabel scipy scikit-image scikit-learn trimesh pandas openpyxl
+```
+
+(add them to `requirements-core.txt` first if you want the single
+`pip download -r requirements-core.txt` command to cover them). Expect this to add
+roughly **150–250 MB** to `.\dependencies` — scipy, scikit‑image and scikit‑learn
+are large compiled wheels. Budget USB space accordingly.
+
+### Run measurements on a separate CPU box
+
+Segmentation wants the GPU; morphometry does not. Run one worker of each against
+the same registry:
+
+```
+microct-worker --kind segmentation      :: on the GPU box
+microct-measure-worker                  :: on any CPU box  (= microct-worker --kind measurement)
+```
+
+`microct-worker` with no arguments still does **both** kinds, as before.
+
+### Licensing of the vendored pipeline
+
+`scripts/perios/digitpipe_v5` is third‑party code vendored from a repository with
+**no license file**, so redistribution rights are unconfirmed. See
+`scripts/perios/PROVENANCE.md` — this must be resolved before shipping the app
+externally.
+
+---
+
+## 5. Summary
 
 | Task | Needs internet? | Needs GPU stack? |
 |------|-----------------|------------------|
 | Run the dashboard, view/compare results, export BMPs | No (uses `.\dependencies`) | No |
 | Run a **new** segmentation | Once, to install torch + nnU‑Net (unless pre‑bundled) | GPU recommended |
+| Run a **morphometry measurement** | Once, to install `[morph]` — **not in the wheelhouse yet** | No (CPU‑only) |

@@ -20,6 +20,29 @@ def _safe(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_") or "item"
 
 
+def spacing_um_for(run, ds=None) -> float:
+    """Physical voxel size (um) to convert a run's mask into millimetres.
+
+    Comes from the RUN, not the dataset. `run.params["spacing_mm"]` — always set by
+    enqueue_runs below — is the spacing the segmentation actually baked into the mask
+    NIfTI geometry and used for the run's own roi_mm3, and it is an immutable snapshot.
+    `Dataset.voxel_size_um` is neither of those things: an operator can override the
+    spacing per run for a binned reconstruction, and re-ingesting a dataset rewrites
+    voxel_size_um in place. Deriving mm from the dataset would therefore describe a
+    mask at one scale using a spacing from another — every volume off by the cube of
+    the ratio and every length by the ratio, while the voxel-unit values stay perfectly
+    correct and nothing raises. The dataset is only a fallback for runs predating this.
+    """
+    spacing_mm = (getattr(run, "params", None) or {}).get("spacing_mm")
+    if spacing_mm:
+        return float(spacing_mm) * 1000.0
+    if ds is None:
+        ds = getattr(run, "dataset", None)
+    if ds is not None and ds.voxel_size_um:
+        return float(ds.voxel_size_um)
+    return 4.0
+
+
 # --------------------------------------------------------------------------- NAS paths
 def nas_relpath_for(abs_path: str | Path) -> Optional[str]:
     """Path of `abs_path` relative to the NAS base ("Ultron"), using forward

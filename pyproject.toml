@@ -26,11 +26,21 @@ dependencies = [
 #   pip install -e ".[seg]"
 # For a CUDA build of torch, install torch first from the pytorch.org index, then this.
 seg = ["nnunetv2>=2.2", "torch>=2.0", "natsort>=8"]
+# Install this extra on the machine that runs MORPHOMETRY measurements (CPU-only —
+# it can be the same box, or a cheap one running `microct-measure-worker`):
+#   pip install -e ".[morph]"
+# scikit-learn is REQUIRED even though it wasn't in the original spec: the vendored
+# scripts/perios/digitpipe_v5/utils.py imports sklearn.decomposition.PCA at module
+# level, so every stage fails at import without it. trimesh is not imported by any
+# vendored file today; it is kept for the mesh work that pipeline is heading toward.
+morph = ["nibabel>=5.0", "scipy>=1.10", "scikit-image>=0.20", "scikit-learn>=1.3",
+         "trimesh>=4.0", "pandas>=2.0", "openpyxl>=3.1"]
 dev = ["pytest>=8", "httpx>=0.27"]
 
 [project.scripts]
 microct-web = "microct_lab.cli:web"
 microct-worker = "microct_lab.cli:worker"
+microct-measure-worker = "microct_lab.cli:measure_worker"
 microct-ingest = "microct_lab.cli:ingest_cli"
 microct-register-model = "microct_lab.cli:register_model_cli"
 

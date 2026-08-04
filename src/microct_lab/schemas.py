@@ -2,9 +2,28 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Optional
+from typing import Annotated, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PlainSerializer
+
+
+def _as_utc(v: dt.datetime) -> str:
+    """Serialize a timestamp as unambiguous UTC, ending in `Z`.
+
+    Every timestamp in the registry is UTC — the models default to
+    `datetime.utcnow()` — but that produces a NAIVE datetime, which pydantic then
+    renders as "2026-07-16T03:51:46.017532" with no zone. JavaScript's Date
+    parses a bare datetime like that as *local* time, so a browser silently
+    shifts every displayed time by its UTC offset. Values already stored in
+    SQLite are naive too, so this is fixed at serialization rather than by
+    changing the column default: it corrects existing rows and new ones alike.
+    """
+    if v.tzinfo is None:
+        v = v.replace(tzinfo=dt.timezone.utc)
+    return v.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+UtcDateTime = Annotated[dt.datetime, PlainSerializer(_as_utc, return_type=str)]
 
 
 class ModelOut(BaseModel):
@@ -24,7 +43,7 @@ class ModelOut(BaseModel):
     num_training_cases: Optional[int] = None
     description: Optional[str] = None
     archived: bool = False
-    created_at: dt.datetime
+    created_at: UtcDateTime
 
 
 class DatasetOut(BaseModel):
@@ -55,7 +74,7 @@ class DatasetOut(BaseModel):
     notes: Optional[str] = None
     flagged: bool = False
     archived: bool = False
-    created_at: dt.datetime
+    created_at: UtcDateTime
     run_count: int = 0
 
 
@@ -73,9 +92,9 @@ class RunOut(BaseModel):
     device_used: Optional[str] = None
     model_version: Optional[str] = None
     model_snapshot: dict = {}
-    created_at: dt.datetime
-    started_at: Optional[dt.datetime] = None
-    ended_at: Optional[dt.datetime] = None
+    created_at: UtcDateTime
+    started_at: Optional[UtcDateTime] = None
+    ended_at: Optional[UtcDateTime] = None
     duration_sec: Optional[float] = None
     roi_voxels: Optional[int] = None
     roi_mm3: Optional[float] = None
@@ -98,6 +117,57 @@ class RunOut(BaseModel):
     model_name: Optional[str] = None
 
 
+class MeasurementOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+    id: int
+    run_id: int
+    dataset_id: int
+    status: str
+    pipeline_version: str = "digitpipe_v5"
+    params: dict = {}
+    error: Optional[str] = None
+    created_at: UtcDateTime
+    started_at: Optional[UtcDateTime] = None
+    ended_at: Optional[UtcDateTime] = None
+    duration_sec: Optional[float] = None
+    socket_volume_voxels: Optional[float] = None
+    socket_volume_mm3: Optional[float] = None
+    socket_radius_voxels: Optional[float] = None
+    socket_radius_mm: Optional[float] = None
+    socket_centroid: Optional[list] = None
+    phalanx_volume_voxels: Optional[float] = None
+    phalanx_volume_mm3: Optional[float] = None
+    bone_length_voxels: Optional[float] = None
+    bone_length_mm: Optional[float] = None
+    euclidean_distance_voxels: Optional[float] = None
+    euclidean_distance_mm: Optional[float] = None
+    metrics: dict = {}
+    output_dir: Optional[str] = None
+    log_path: Optional[str] = None
+    annotated_nii: Optional[str] = None
+    xlsx_path: Optional[str] = None
+    env: dict = {}
+    host: Optional[str] = None
+    notes: Optional[str] = None
+    flagged: bool = False
+    archived: bool = False
+    # convenience, filled by the router
+    dataset_name: Optional[str] = None
+    run_status: Optional[str] = None
+
+
+class MeasurementCreate(BaseModel):
+    run_ids: list[int]
+    pipeline_version: str = "digitpipe_v5"
+    skip_viz: bool = False
+
+
+class MeasurementPatch(BaseModel):
+    notes: Optional[str] = None
+    flagged: Optional[bool] = None
+    archived: Optional[bool] = None
+
+
 # ---- projects / experiments / sets / analyses ----
 
 class ProjectOut(BaseModel):
@@ -107,7 +177,7 @@ class ProjectOut(BaseModel):
     description: Optional[str] = None
     tags: list = []
     archived: bool = False
-    created_at: dt.datetime
+    created_at: UtcDateTime
     experiment_count: int = 0
     dataset_count: int = 0
     analysis_count: int = 0
@@ -121,7 +191,7 @@ class ExperimentOut(BaseModel):
     type: str = "uct"
     description: Optional[str] = None
     tags: list = []
-    created_at: dt.datetime
+    created_at: UtcDateTime
     set_count: int = 0
     dataset_count: int = 0
 
@@ -133,7 +203,7 @@ class SetOut(BaseModel):
     name: str
     description: Optional[str] = None
     tags: list = []
-    created_at: dt.datetime
+    created_at: UtcDateTime
     dataset_count: int = 0
 
 
@@ -150,7 +220,7 @@ class AnalysisOut(BaseModel):
     set_ids: list = []
     run_ids: list = []
     tags: list = []
-    created_at: dt.datetime
+    created_at: UtcDateTime
 
 
 # ---- request bodies ----
