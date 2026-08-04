@@ -37,14 +37,25 @@ LOCAL_ORIGIN_RE = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$")
 
 
 def _is_local_caller(request: Request) -> bool:
-    """True when the request comes from this machine rather than a hosted page.
+    """True when the request genuinely comes from this machine.
 
-    A browser always attaches the page's real `Origin` to a cross-origin request,
-    so a public website cannot pass itself off as local here. No `Origin` at all
-    means a same-origin page (the bundled UI) or a local tool like curl.
+    Two cases, and BOTH must be pinned down:
+
+    * An `Origin` header naming localhost — a page served from this machine. A
+      browser always attaches the page's real origin to a cross-origin request,
+      so a public website cannot forge this.
+    * No `Origin` at all — a same-origin page or a local tool such as curl. This
+      one needs the network check too: an absent `Origin` says the caller is not
+      a cross-origin browser page, it says nothing about *where* the caller is.
+      Without the loopback test, binding to 0.0.0.0 for LAN access would let
+      anyone on the network skip the token entirely just by not sending a header
+      browsers add on their own. Verified: it returned real dataset JSON.
     """
     origin = request.headers.get("origin")
-    return not origin or bool(LOCAL_ORIGIN_RE.match(origin))
+    if origin:
+        return bool(LOCAL_ORIGIN_RE.match(origin))
+    client = request.client.host if request.client else None
+    return client in _LOOPBACK
 
 
 def _needs_token(request: Request) -> bool:
