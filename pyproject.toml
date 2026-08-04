@@ -41,6 +41,7 @@ dev = ["pytest>=8", "httpx>=0.27"]
 microct-web = "microct_lab.cli:web"
 microct-worker = "microct_lab.cli:worker"
 microct-measure-worker = "microct_lab.cli:measure_worker"
+microct-token = "microct_lab.cli:show_token"
 microct-ingest = "microct_lab.cli:ingest_cli"
 microct-register-model = "microct_lab.cli:register_model_cli"
 

@@ -42,6 +42,31 @@ def worker(argv: list[str] | None = None) -> None:
     run_worker(args.kind)
 
 
+def show_token() -> None:
+    """Print the access token a remotely-hosted UI needs. Reads .env directly, so
+    it works whether or not the server is running."""
+    if not settings.api_token:
+        print("No access token is set on this server.")
+        print()
+        print("You only need one when a UI hosted elsewhere (e.g. Vercel) drives")
+        print("this server. To enable that, set both of these in .env and restart:")
+        print("    MICROCT_ALLOWED_ORIGINS=https://your-app.vercel.app")
+        print("    MICROCT_API_TOKEN=" +
+              "<generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\">")
+        print()
+        print("Until then the built-in dashboard at "
+              f"http://{settings.host}:{settings.port} needs no token.")
+        return
+
+    origins = ", ".join(settings.extra_origins) or "(none — set MICROCT_ALLOWED_ORIGINS)"
+    print("Access token for the remote UI's Connection panel:")
+    print()
+    print(f"    {settings.api_token}")
+    print()
+    print(f"  base URL         http://{settings.host}:{settings.port}")
+    print(f"  allowed origin   {origins}")
+
+
 def measure_worker() -> None:
     """CPU-only measurement worker — run alongside the GPU segmentation worker."""
     worker(["--kind", "measurement"])

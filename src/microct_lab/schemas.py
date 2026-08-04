@@ -68,7 +68,7 @@ class DatasetOut(BaseModel):
     filter: Optional[str] = None
     scan_date: Optional[str] = None
     study: Optional[str] = None
-    tags: list = []
+    tags: list[str] = []
     thumbnail: Optional[str] = None
     size_bytes: Optional[int] = None
     notes: Optional[str] = None
@@ -108,7 +108,7 @@ class RunOut(BaseModel):
     torch_version: Optional[str] = None
     error: Optional[str] = None
     qc_status: str = "unreviewed"
-    qc_tags: list = []
+    qc_tags: list[str] = []
     rating: Optional[int] = None
     flagged: bool = False
     archived: bool = False
@@ -134,7 +134,7 @@ class MeasurementOut(BaseModel):
     socket_volume_mm3: Optional[float] = None
     socket_radius_voxels: Optional[float] = None
     socket_radius_mm: Optional[float] = None
-    socket_centroid: Optional[list] = None
+    socket_centroid: Optional[list[float]] = None
     phalanx_volume_voxels: Optional[float] = None
     phalanx_volume_mm3: Optional[float] = None
     bone_length_voxels: Optional[float] = None
@@ -175,7 +175,7 @@ class ProjectOut(BaseModel):
     id: int
     name: str
     description: Optional[str] = None
-    tags: list = []
+    tags: list[str] = []
     archived: bool = False
     created_at: UtcDateTime
     experiment_count: int = 0
@@ -190,7 +190,7 @@ class ExperimentOut(BaseModel):
     name: str
     type: str = "uct"
     description: Optional[str] = None
-    tags: list = []
+    tags: list[str] = []
     created_at: UtcDateTime
     set_count: int = 0
     dataset_count: int = 0
@@ -202,7 +202,7 @@ class SetOut(BaseModel):
     experiment_id: int
     name: str
     description: Optional[str] = None
-    tags: list = []
+    tags: list[str] = []
     created_at: UtcDateTime
     dataset_count: int = 0
 
@@ -216,10 +216,10 @@ class AnalysisOut(BaseModel):
     type: Optional[str] = None
     description: Optional[str] = None
     files_relpath: Optional[str] = None
-    dataset_ids: list = []
-    set_ids: list = []
-    run_ids: list = []
-    tags: list = []
+    dataset_ids: list[int] = []
+    set_ids: list[int] = []
+    run_ids: list[int] = []
+    tags: list[str] = []
     created_at: UtcDateTime
 
 
@@ -257,7 +257,7 @@ class ModelPatch(BaseModel):
 
 class RunReview(BaseModel):
     qc_status: Optional[str] = None
-    qc_tags: Optional[list] = None
+    qc_tags: Optional[list[str]] = None
     rating: Optional[int] = None
     flagged: Optional[bool] = None
     review_note: Optional[str] = None
@@ -266,13 +266,13 @@ class RunReview(BaseModel):
 class ProjectIn(BaseModel):
     name: str
     description: Optional[str] = None
-    tags: Optional[list] = None
+    tags: Optional[list[str]] = None
 
 
 class ProjectPatch(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    tags: Optional[list] = None
+    tags: Optional[list[str]] = None
     archived: Optional[bool] = None
 
 
@@ -281,14 +281,14 @@ class ExperimentIn(BaseModel):
     name: str
     type: str = "uct"
     description: Optional[str] = None
-    tags: Optional[list] = None
+    tags: Optional[list[str]] = None
 
 
 class ExperimentPatch(BaseModel):
     name: Optional[str] = None
     type: Optional[str] = None
     description: Optional[str] = None
-    tags: Optional[list] = None
+    tags: Optional[list[str]] = None
     project_id: Optional[int] = None
 
 
@@ -296,13 +296,13 @@ class SetIn(BaseModel):
     experiment_id: int
     name: str
     description: Optional[str] = None
-    tags: Optional[list] = None
+    tags: Optional[list[str]] = None
 
 
 class SetPatch(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    tags: Optional[list] = None
+    tags: Optional[list[str]] = None
     experiment_id: Optional[int] = None
 
 
@@ -313,10 +313,10 @@ class AnalysisIn(BaseModel):
     type: Optional[str] = None
     description: Optional[str] = None
     files_relpath: Optional[str] = None
-    dataset_ids: Optional[list] = None
-    set_ids: Optional[list] = None
-    run_ids: Optional[list] = None
-    tags: Optional[list] = None
+    dataset_ids: Optional[list[int]] = None
+    set_ids: Optional[list[int]] = None
+    run_ids: Optional[list[int]] = None
+    tags: Optional[list[str]] = None
 
 
 class AnalysisPatch(BaseModel):
@@ -326,10 +326,10 @@ class AnalysisPatch(BaseModel):
     type: Optional[str] = None
     description: Optional[str] = None
     files_relpath: Optional[str] = None
-    dataset_ids: Optional[list] = None
-    set_ids: Optional[list] = None
-    run_ids: Optional[list] = None
-    tags: Optional[list] = None
+    dataset_ids: Optional[list[int]] = None
+    set_ids: Optional[list[int]] = None
+    run_ids: Optional[list[int]] = None
+    tags: Optional[list[str]] = None
 
 
 class DatasetPatch(BaseModel):
@@ -338,7 +338,7 @@ class DatasetPatch(BaseModel):
     organism: Optional[str] = None
     set_id: Optional[int] = None
     experiment_id: Optional[int] = None
-    tags: Optional[list] = None
+    tags: Optional[list[str]] = None
     notes: Optional[str] = None
     flagged: Optional[bool] = None
     archived: Optional[bool] = None

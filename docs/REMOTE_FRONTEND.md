@@ -55,7 +55,27 @@ warning at startup, because that combination leaves the API open to any website.
 Open the hosted page and use the **Connection** panel in the header:
 
 - **API base URL** — `http://localhost:8000`
-- **API token** — the token from `.env`
+- **API token** — see below
+
+### Finding the token
+
+Three ways, all on the server machine:
+
+```bash
+microct-token
+```
+
+or open **<http://127.0.0.1:8000/api/token>** in a browser tab, or read the last
+line of `.env`. The server also prints it at startup.
+
+That endpoint is deliberately narrow. It refuses any caller that is not on
+loopback — so with `MICROCT_HOST=0.0.0.0` a colleague on the LAN cannot read it —
+and it refuses any request carrying an `Origin` header, which means **no web page
+can fetch it**, not even one from an allowed origin. That last restriction is the
+important one: the localhost origin rule permits *any* local port, so without it
+any other web app you happen to be running could ask for this token and then
+drive the entire API with it. What remains is what a person needs: `curl`, or the
+address bar, since a top-level navigation sends no `Origin`.
 
 Both are stored in your browser's `localStorage` (`microct_api_base` and
 `microct_api_token`), so this is a one-time step per browser. Nothing is baked

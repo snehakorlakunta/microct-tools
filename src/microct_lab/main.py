@@ -4,7 +4,7 @@ from __future__ import annotations
 import secrets
 import warnings
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,9 +17,13 @@ from .routers import analyses, datasets, measurements, models, projects, runs, s
 app = FastAPI(title="microCT Segmentation Lab", version="0.1.0")
 
 # Endpoints reachable without a token: the health probe a remote frontend uses to
-# discover whether this server is up and whether it demands auth. Deliberately
-# leaks nothing but the app name and that one boolean.
-_PUBLIC_PATHS = {"/api/health"}
+# discover whether this server is up and whether it demands auth, and the token
+# hand-off below, which guards itself. Health deliberately leaks nothing but the
+# app name and that one boolean.
+_PUBLIC_PATHS = {"/api/health", "/api/token"}
+
+# Loopback addresses. Only a caller ON this machine may read the access token.
+_LOOPBACK = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
 
 # Everything the token guards. /api/* is the data; the schema and docs endpoints
 # are listed explicitly because they live outside that prefix and would otherwise
@@ -35,6 +39,52 @@ def health():
         "app": "microct-seg-lab",
         "version": app.version,
         "auth_required": bool(settings.api_token),
+    }
+
+
+@app.get("/api/token", tags=["system"])
+def access_token(request: Request):
+    """Show the access token, so you can copy it into a remote UI.
+
+    Guarded two ways, because handing out the credential that protects everything
+    else needs to be narrower than "unauthenticated":
+
+    1. **Loopback callers only.** With MICROCT_HOST=0.0.0.0 the server is on the
+       LAN, and without this check any colleague could read the token straight
+       off it.
+    2. **No `Origin` header.** A browser attaches `Origin` to every cross-origin
+       request, so this refuses all of them — including from origins CORS would
+       otherwise allow. That matters because the localhost origin rule permits
+       *any* local port, so any other web app you happen to be running could
+       otherwise ask for this token and then drive the whole API with it.
+
+    What is left is what a person actually needs: `curl`, or typing the URL into
+    the address bar (a top-level navigation sends no `Origin`).
+    """
+    if not settings.api_token:
+        return {
+            "auth_required": False,
+            "detail": "This server has no token set, so the UI needs only the base URL.",
+        }
+
+    client = request.client.host if request.client else None
+    if client not in _LOOPBACK:
+        raise HTTPException(
+            403, "The access token is readable only from this machine. "
+                 "Run `microct-token` in a terminal on the server instead.")
+
+    if request.headers.get("origin"):
+        raise HTTPException(
+            403, "The access token cannot be read by a web page. Open "
+                 "http://127.0.0.1:8000/api/token directly in a tab, or run "
+                 "`microct-token` on the server.")
+
+    return {
+        "auth_required": True,
+        "token": settings.api_token,
+        "allowed_origins": settings.extra_origins,
+        "hint": "Paste this into the UI's Connection panel along with this "
+                "server's base URL.",
     }
 
 
