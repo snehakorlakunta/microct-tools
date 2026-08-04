@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .config import settings
 
@@ -39,6 +40,13 @@ def web() -> None:
         print(f"  Access token set, but no remote origin is allowed, so only this")
         print(f"  machine can reach the API. Run `microct-token` to see it.")
         print()
+
+    # Flush before handing over to uvicorn. Python block-buffers stdout when it is
+    # not a terminal, so redirecting to a log file (or running under a service
+    # manager) would otherwise hold this banner back while uvicorn's own logging —
+    # which goes to stderr — appears immediately. The setup guide tells people to
+    # look for these lines, so they have to actually arrive.
+    sys.stdout.flush()
 
     uvicorn.run("microct_lab.main:app", host=settings.host, port=settings.port)
 
