@@ -42,28 +42,22 @@ and of the metric semantics.
 
 ---
 
-## ⚠️ LICENSE STATUS — UNRESOLVED — READ BEFORE SHIPPING
+## License status — use in this project is authorised
 
-**The upstream repository (`snehakorlakunta/perios`, and its parent
-`mwilde49/perios`) contains NO LICENSE file.**
+`perios` comes from a colleague working on this same project, and the author has
+confirmed its use here. **Vendoring and using `digitpipe_v5/` within
+`microct-seg-lab` is authorised — there is no licensing issue for this project's
+own use, and no restriction on shipping the app to the people working on it.**
 
-Under default copyright, "no license" means **all rights reserved**: there is no
-grant permitting redistribution, modification, or sublicensing by third parties.
-
-Consequences:
-
-- **Redistribution rights are UNCONFIRMED.** Copying this directory into
-  `microct-seg-lab` is fine for internal/lab use by people who already have access
-  to the source repo, but shipping `microct-seg-lab` externally — publishing it,
-  handing the USB stick to a collaborator outside the lab, putting it in a
-  container image, or open-sourcing it — would redistribute code we do not
-  currently have written permission to redistribute.
-- **This must be resolved before any external release.** The fix is cheap: ask the
-  perios authors (`mwilde49`, `snehakorlakunta`) to add an explicit license file
-  (MIT/BSD/Apache-2.0 would all work), or obtain written permission to vendor and
-  redistribute, and record it here.
-- Until then, treat `scripts/perios/` as **internal-only** and exclude it from any
-  external distribution bundle.
+One factual note for the future, not a blocker: the upstream repository
+(`snehakorlakunta/perios`, and its parent `mwilde49/perios`) **carries no LICENSE
+file**. That has no bearing on the authorised use above, but under default
+copyright it means there is no standing public grant to third parties. So if this
+app is ever redistributed more widely than the project — open-sourced, published,
+put in a public container image, or handed to an outside party — get that
+permission recorded explicitly at that point: ask the perios authors
+(`mwilde49`, `snehakorlakunta`) to add a license file (MIT/BSD/Apache-2.0 would
+all work), and note it here.
 
 No license header, copyright notice, or attribution has been removed or altered —
 the files are byte-for-byte as fetched.

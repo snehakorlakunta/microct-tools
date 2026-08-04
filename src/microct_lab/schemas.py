@@ -115,6 +115,11 @@ class RunOut(BaseModel):
     review_note: Optional[str] = None
     dataset_name: Optional[str] = None
     model_name: Optional[str] = None
+    # Computed by the router (NOT stored): this run has been 'canceling' for
+    # longer than MICROCT_STUCK_AFTER_SECONDS, which means no worker picked the
+    # request up and it will never resolve on its own. The UI uses this to decide
+    # when to offer POST /api/runs/{id}/cancel?force=true.
+    stuck: bool = False
 
 
 class MeasurementOut(BaseModel):
@@ -154,6 +159,9 @@ class MeasurementOut(BaseModel):
     # convenience, filled by the router
     dataset_name: Optional[str] = None
     run_status: Optional[str] = None
+    # Computed by the router (NOT stored) — see RunOut.stuck. Offers the UI a cue
+    # for POST /api/measurements/{id}/cancel?force=true.
+    stuck: bool = False
 
 
 class MeasurementCreate(BaseModel):

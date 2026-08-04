@@ -51,6 +51,11 @@ def config():
         "nas_root": str(settings.nas_root) if settings.nas_root else None,
         "analyses_dir": str(settings.analyses_dir),
         "default_device": settings.default_device,
+        # Morphometry anatomy gate. Reported so the UI can explain a blocked
+        # measurement and name the tag that unblocks it, instead of hardcoding
+        # "phalanx" and going stale the moment the setting changes.
+        "morph_require_anatomy": settings.morph_require_anatomy,
+        "morph_anatomy_tags": settings.morph_anatomy_tag_list,
     }
 
 

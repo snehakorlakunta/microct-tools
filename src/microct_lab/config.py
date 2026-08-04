@@ -44,6 +44,24 @@ class Settings(BaseSettings):
     default_device: str = "auto"
     poll_seconds: float = 2.0
 
+    # How long a job may sit in "canceling" before the API reports it as stuck.
+    # A cancel is a two-step handshake: the API flips the row to "canceling" and
+    # the WORKER kills the subprocess and writes the terminal status. If no worker
+    # is running (or it died in between) nobody ever completes step two and the
+    # row sits there forever, blocking archive. Past this many seconds the API
+    # sets `stuck` on the row so the UI can offer a forced cancel. Advisory only —
+    # nothing is changed automatically.
+    stuck_after_seconds: float = 120.0
+
+    # --- Morphometry anatomy gate -----------------------------------------------
+    # The vendored digitpipe_v5 pipeline is built for mouse terminal phalanx at
+    # ~4um. On other anatomy it does not fail — it returns confident, plausible,
+    # wrong numbers (see morphqc.py). So refuse to measure a dataset that is not
+    # marked as the right anatomy, rather than only warning afterwards.
+    morph_require_anatomy: bool = True
+    # Comma-separated tags, any ONE of which marks a dataset as measurable.
+    morph_anatomy_tags: str = "phalanx"
+
     # --- Remote frontend access -------------------------------------------------
     # A frontend hosted elsewhere (e.g. a Vercel-deployed Next.js build) runs in
     # the user's browser and calls THIS server on localhost. Its origin must be
@@ -88,6 +106,12 @@ class Settings(BaseSettings):
         import re
         local = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$")
         return [o for o in self.extra_origins if not local.match(o)]
+
+    @property
+    def morph_anatomy_tag_list(self) -> list[str]:
+        """The anatomy tags, lowercased and stripped, for case-insensitive matching
+        against Dataset.tags."""
+        return [t.strip().lower() for t in self.morph_anatomy_tags.split(",") if t.strip()]
 
     @property
     def thumbs_dir(self) -> Path:

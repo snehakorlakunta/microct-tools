@@ -173,6 +173,22 @@ python -m pip download -d dependencies nibabel scipy scikit-image scikit-learn t
 roughly **150–250 MB** to `.\dependencies` — scipy, scikit‑image and scikit‑learn
 are large compiled wheels. Budget USB space accordingly.
 
+### The anatomy gate (on by default)
+
+`digitpipe_v5` is built for **mouse terminal phalanx** at ~4 µm and returns
+plausible-but-meaningless numbers on anything else, so `POST /api/measurements`
+refuses a run whose dataset is not tagged as that anatomy (HTTP 400, with a
+message naming the dataset and the tag that unblocks it):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `MICROCT_MORPH_REQUIRE_ANATOMY` | `true` | Enforce the gate. `false` allows any dataset. |
+| `MICROCT_MORPH_ANATOMY_TAGS` | `phalanx` | Dataset tag(s) that count. Comma-separated, any one matches, case-insensitive. |
+
+Both are reported by `GET /api/config` so the UI can name the required tag
+instead of hardcoding it. `morphqc.py` still checks the resulting numbers against
+the reference cohort afterwards — the gate is the earlier, harder stop.
+
 ### Run measurements on a separate CPU box
 
 Segmentation wants the GPU; morphometry does not. Run one worker of each against
@@ -187,10 +203,10 @@ microct-measure-worker                  :: on any CPU box  (= microct-worker --k
 
 ### Licensing of the vendored pipeline
 
-`scripts/perios/digitpipe_v5` is third‑party code vendored from a repository with
-**no license file**, so redistribution rights are unconfirmed. See
-`scripts/perios/PROVENANCE.md` — this must be resolved before shipping the app
-externally.
+`scripts/perios/digitpipe_v5` is vendored from a colleague's repository on this
+same project, and its author has confirmed its use here — nothing is blocked. The
+upstream repo carries no license file, which only matters if the app is ever
+redistributed beyond the project; see `scripts/perios/PROVENANCE.md`.
 
 ---
 

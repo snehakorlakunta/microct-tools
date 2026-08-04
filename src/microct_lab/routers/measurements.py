@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..database import get_db
 from ..models import Measurement, Run
-from ..registry import _safe, spacing_um_for
+from ..registry import _safe, force_cancel, job_is_stuck, spacing_um_for
 from ..schemas import MeasurementCreate, MeasurementOut, MeasurementPatch
 from ..stats import describe
 
@@ -39,7 +39,41 @@ def _out(m: Measurement) -> MeasurementOut:
     o.run_status = run.status if run else None
     ds = run.dataset if run else None
     o.dataset_name = ds.name if ds else None
+    # Derived per request from the clock, never stored — see registry.job_is_stuck.
+    o.stuck = job_is_stuck(m)
     return o
+
+
+def _anatomy_block_reason(run: Run) -> Optional[str]:
+    """Why morphometry is refused for this run, or None if it is allowed.
+
+    The vendored digitpipe_v5 pipeline is built for mouse terminal phalanx at
+    ~4um. On any other anatomy it does not fail — it runs all eight stages, exits
+    cleanly, and emits a full set of confident, plausible, meaningless numbers
+    (morphqc.py catches some of those after the fact, but only as a warning on a
+    result that already exists). So the dataset must be marked as the right
+    anatomy before the job is allowed to start.
+    """
+    if not settings.morph_require_anatomy:
+        return None
+    wanted = settings.morph_anatomy_tag_list
+    if not wanted:  # gate on, but nothing configured to match -> nothing to enforce
+        return None
+    ds = run.dataset
+    if ds is None:
+        return (f"Run {run.id} has no dataset record, so its anatomy cannot be "
+                f"confirmed and morphometry is blocked. Set "
+                f"MICROCT_MORPH_REQUIRE_ANATOMY=false to disable this check.")
+    have = {str(t).strip().lower() for t in (ds.tags or [])}
+    if have & set(wanted):
+        return None
+    quoted = " or ".join(repr(t) for t in wanted)
+    label = wanted[0] if len(wanted) == 1 else " / ".join(wanted)
+    return (f"Dataset {ds.name!r} is not marked as {label} anatomy, so morphometry "
+            f"is blocked. This pipeline is built for mouse terminal phalanx and "
+            f"returns plausible but meaningless numbers on other anatomy. Tag the "
+            f"dataset {quoted} to allow it, or set "
+            f"MICROCT_MORPH_REQUIRE_ANATOMY=false to disable this check.")
 
 
 def _case_from_run(run: Run) -> str:
@@ -88,7 +122,11 @@ def measurement_stats(dataset_id: Optional[int] = None, db: Session = Depends(ge
 def create_measurements(body: MeasurementCreate, db: Session = Depends(get_db)):
     """Enqueue one Measurement per run_id. Every run must have succeeded and still
     have its mask on disk — a measurement over a missing/failed segmentation would
-    only fail slowly in the worker, so reject it up front."""
+    only fail slowly in the worker, so reject it up front.
+
+    Its dataset must also be tagged as the anatomy this pipeline is built for
+    (MICROCT_MORPH_ANATOMY_TAGS, default 'phalanx'), unless
+    MICROCT_MORPH_REQUIRE_ANATOMY is false — see _anatomy_block_reason."""
     if not body.run_ids:
         raise HTTPException(400, "run_ids is empty")
     if not _safe(body.pipeline_version) == body.pipeline_version:
@@ -108,6 +146,9 @@ def create_measurements(body: MeasurementCreate, db: Session = Depends(get_db)):
         if not run.input_nii or not os.path.isfile(run.input_nii):
             raise HTTPException(400, f"run {rid} has no input volume on disk "
                                      f"({run.input_nii or 'input_nii unset'})")
+        blocked = _anatomy_block_reason(run)
+        if blocked:
+            raise HTTPException(400, blocked)
         runs.append(run)
 
     made: list[Measurement] = []
@@ -157,12 +198,36 @@ def patch_measurement(measurement_id: int, body: MeasurementPatch,
 
 
 @router.post("/{measurement_id}/cancel", response_model=MeasurementOut)
-def cancel_measurement(measurement_id: int, db: Session = Depends(get_db)):
+def cancel_measurement(measurement_id: int, force: bool = False,
+                       db: Session = Depends(get_db)):
     """Stop a measurement. Queued ones cancel immediately; a running one is flagged
-    'canceling' and the worker kills its pipeline process within a few seconds."""
+    'canceling' and the worker kills its pipeline process within a few seconds.
+
+    `?force=true` is the escape hatch for when that never happens — no measurement
+    worker was running, or one died between the flag and the kill — and the row is
+    stranded in 'canceling' (`stuck` on this measurement says so). It resolves the
+    row terminally: status 'canceled', with ended_at/duration_sec stamped exactly
+    as the worker would have.
+
+    Forcing corrects the record; it does not stop anything. No signal is sent and
+    no process is killed, so a morphometry pipeline that is genuinely still
+    running on a worker machine keeps running — and keeps writing into the output
+    directory — with no in-flight row left to show for it. The `error` field
+    records that. Check the worker host before treating the compute as stopped.
+    """
     m = db.get(Measurement, measurement_id)
     if not m:
         raise HTTPException(404, "measurement not found")
+    if force:
+        if m.status not in ("canceling", "running"):
+            raise HTTPException(
+                409, f"cannot force-cancel a measurement that is {m.status} — "
+                     f"forcing only applies to one stranded in 'canceling' (or one "
+                     f"that is 'running'). A queued measurement cancels cleanly "
+                     f"with plain POST /api/measurements/{measurement_id}/cancel.")
+        force_cancel(db, m, process_noun="morphometry")
+        db.refresh(m)
+        return _out(m)
     if m.status == "queued":
         m.status = "canceled"
     elif m.status == "running":

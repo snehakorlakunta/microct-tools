@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Run
-from ..registry import enqueue_runs
+from ..registry import enqueue_runs, force_cancel, job_is_stuck
 from ..schemas import RunCreate, RunOut, RunReview
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -39,6 +39,8 @@ def _out(r: Run) -> RunOut:
     o = RunOut.model_validate(r)
     o.dataset_name = r.dataset.name if r.dataset else None
     o.model_name = r.model.name if r.model else None
+    # Derived per request from the clock, never stored — see registry.job_is_stuck.
+    o.stuck = job_is_stuck(r)
     return o
 
 
@@ -135,12 +137,36 @@ def review_run(run_id: int, body: RunReview, db: Session = Depends(get_db)):
 
 
 @router.post("/{run_id}/cancel", response_model=RunOut)
-def cancel_run(run_id: int, db: Session = Depends(get_db)):
+def cancel_run(run_id: int, force: bool = False, db: Session = Depends(get_db)):
     """Stop a run. Queued runs cancel immediately; a running run is flagged
-    'canceling' and the worker kills its segmentation process within a few seconds."""
+    'canceling' and the worker kills its segmentation process within a few seconds.
+
+    `?force=true` is the escape hatch for when that never happens — no worker was
+    running, or one died between the flag and the kill — and the row is stranded
+    in 'canceling' (`stuck` on this run says so). It resolves the row terminally:
+    status 'canceled', with ended_at/duration_sec stamped exactly as the worker
+    would have.
+
+    Be clear about what forcing is: **a correction to the record, not a stop
+    button.** It signals nothing and kills nothing. If a segmentation process for
+    this run really is still alive on a worker machine, it stays alive after this
+    call — still on the GPU, still writing into the output directory — and now
+    without a running row to show for it. The `error` field records that. Check
+    the worker host before treating the compute as stopped.
+    """
     r = db.get(Run, run_id)
     if not r:
         raise HTTPException(404, "run not found")
+    if force:
+        if r.status not in ("canceling", "running"):
+            raise HTTPException(
+                409, f"cannot force-cancel a run that is {r.status} — forcing only "
+                     f"applies to a run stranded in 'canceling' (or one that is "
+                     f"'running'). A queued run cancels cleanly with plain "
+                     f"POST /api/runs/{run_id}/cancel.")
+        force_cancel(db, r, process_noun="segmentation")
+        db.refresh(r)
+        return _out(r)
     if r.status == "queued":
         r.status = "canceled"
     elif r.status == "running":

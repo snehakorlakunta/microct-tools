@@ -310,8 +310,28 @@ The morphometry feature is built for **mouse terminal phalanx** scans at roughly
 4 µm. Pointed at any other anatomy it does not fail — it produces a complete set
 of confident, entirely ordinary-looking numbers that are meaningless.
 
-The interface checks each result against a reference range and shows a warning
-banner, hiding the numbers behind an acknowledgement when something looks wrong.
-**Treat that banner as a stop sign, not a suggestion.** If you are measuring
-anything other than a phalanx, the numbers need a human to confirm the
-segmentation is the right structure before they are used for anything.
+Because of that, measurement is **gated on anatomy** and the gate is **on by
+default**. A dataset must be tagged `phalanx` before it can be measured;
+otherwise starting a measurement is refused outright, with a message naming the
+dataset and the tag that would unblock it. Two settings in `.env` control it:
+
+```ini
+# Refuse to measure a dataset that is not marked as the right anatomy (default true)
+MICROCT_MORPH_REQUIRE_ANATOMY=true
+
+# Dataset tag(s) that count as "the right anatomy". Comma-separated, any one
+# matches, case-insensitive. (default: phalanx)
+MICROCT_MORPH_ANATOMY_TAGS=phalanx
+```
+
+Both are reported by `GET /api/config`, so the interface can explain a block and
+name the required tag rather than assuming it. Set
+`MICROCT_MORPH_REQUIRE_ANATOMY=false` to measure other anatomy anyway — do that
+only if you intend to judge every number yourself.
+
+Past the gate, the interface still checks each result against a reference range
+and shows a warning banner, hiding the numbers behind an acknowledgement when
+something looks wrong. **Treat that banner as a stop sign, not a suggestion.** If
+you are measuring anything other than a phalanx, the numbers need a human to
+confirm the segmentation is the right structure before they are used for
+anything.

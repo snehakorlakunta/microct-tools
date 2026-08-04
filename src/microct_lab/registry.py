@@ -1,6 +1,7 @@
 """Service layer: register models, ingest datasets, enqueue runs. Used by API + CLI."""
 from __future__ import annotations
 
+import datetime as dt
 import re
 from pathlib import Path
 from typing import Optional
@@ -41,6 +42,71 @@ def spacing_um_for(run, ds=None) -> float:
     if ds is not None and ds.voxel_size_um:
         return float(ds.voxel_size_um)
     return 4.0
+
+
+# ------------------------------------------------------------------- stuck / forced cancel
+# Runs and Measurements carry the same status / started_at / ended_at /
+# duration_sec / error columns, so one implementation serves both — the same fact
+# worker._finish relies on.
+#
+# A cancel is a two-step handshake: the API flips the row to "canceling", and the
+# WORKER notices, kills the compute subprocess and writes the terminal status.
+# Step two only ever happens inside a running worker (or at the next worker
+# startup, which sweeps stale rows). With no worker alive, nothing completes the
+# handshake: the row sits in "canceling" indefinitely, plain cancel is idempotent
+# there and does nothing, and archive refuses non-terminal rows — so the job, and
+# anything gated on it, is stranded with no way out through the API.
+
+
+def job_is_stuck(job) -> bool:
+    """Has this job been 'canceling' long enough that no worker is coming?
+
+    Advisory, computed per request — deliberately NOT a column, because it is a
+    function of the clock and would otherwise need a writer to keep it true.
+    """
+    if getattr(job, "status", None) != "canceling":
+        return False
+    since = getattr(job, "started_at", None) or getattr(job, "created_at", None)
+    if since is None:
+        return False
+    try:
+        age = (dt.datetime.utcnow() - since).total_seconds()
+    except TypeError:
+        return False
+    return age > settings.stuck_after_seconds
+
+
+def force_cancel(db: Session, job, *, process_noun: str = "compute") -> None:
+    """Terminally resolve a stranded job, in the bookkeeping ONLY.
+
+    This writes exactly what the worker's `_finish` would have written — status,
+    ended_at, duration_sec — so the row becomes terminal and can be archived.
+
+    What it does NOT do: touch any process. There is no worker here to signal and
+    no recorded PID to kill, so if a segmentation or morphometry process for this
+    job is genuinely still alive on some machine, **it keeps running** — still
+    burning GPU/CPU and still writing into the output directory, now with no row
+    that says so. That is recorded in `error` rather than hidden, and the operator
+    should check the worker host before assuming the work has stopped.
+    """
+    now = dt.datetime.utcnow()
+    was = job.status
+    job.status = "canceled"
+    job.ended_at = now
+    if job.started_at:
+        job.duration_sec = (now - job.started_at).total_seconds()
+    note = (
+        f"force-canceled via the API at {now.isoformat()}Z while {was!r}. "
+        f"Bookkeeping only: no worker was involved, so any {process_noun} "
+        f"subprocess for this job was NOT killed by this action and may still be "
+        f"running on its worker machine; check that host before assuming it "
+        f"stopped."
+        # Deliberately ASCII: unlike an HTTP detail string this is PERSISTED, and
+        # gets re-read by log tails, console tools and CSV exports that are not
+        # all UTF-8.
+    )
+    job.error = f"{job.error}\n{note}" if job.error else note
+    db.commit()
 
 
 # --------------------------------------------------------------------------- NAS paths
