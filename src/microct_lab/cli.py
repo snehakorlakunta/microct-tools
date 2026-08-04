@@ -12,20 +12,32 @@ def web() -> None:
     init_db()
     print(f"microCT Segmentation Lab  ->  http://{settings.host}:{settings.port}")
 
-    # When a remotely-hosted UI is allowed, print what it needs to connect.
-    # Same reasoning as Jupyter printing its token: the operator owns this
-    # console, and the alternative is them hunting through .env while a browser
-    # sits on an empty field. Only ever printed for a token the operator set.
-    if settings.api_token:
-        origins = ", ".join(settings.extra_origins) or "(none configured)"
+    # Say plainly who may reach this server and whether they need a secret. The
+    # alternative is the operator hunting through .env while a browser sits on an
+    # empty token field, which is exactly the confusion this replaces.
+    if settings.remote_origins:
         print()
-        print("  Remote UI access is ENABLED.")
-        print(f"    allowed origin(s):  {origins}")
-        print(f"    access token:       {settings.api_token}")
-        print("    Paste both into the UI's Connection panel.")
-        if settings.remote_origins:
-            print("    NOTE: /api/* now requires this token, so the dashboard bundled")
-            print("          at the URL above will return 401 until you unset it.")
+        print("  A remotely-hosted UI may connect to this server:")
+        for o in settings.remote_origins:
+            print(f"    {o}")
+        if settings.api_token:
+            # Same reasoning as Jupyter printing its token: the operator owns this
+            # console, and only a token they set is ever shown.
+            print()
+            print(f"    access token:  {settings.api_token}")
+            print("    Paste it into the UI's Connection panel with the base URL above.")
+            if not settings.require_token_local:
+                print("    (Pages served from this machine are exempt and need no token.)")
+        else:
+            print()
+            print("    No token required — open the page and it connects.")
+            print("    Only the origin(s) listed above may reach this server; set")
+            print("    MICROCT_API_TOKEN to also require a shared secret.")
+        print()
+    elif settings.api_token:
+        print()
+        print(f"  Access token set, but no remote origin is allowed, so only this")
+        print(f"  machine can reach the API. Run `microct-token` to see it.")
         print()
 
     uvicorn.run("microct_lab.main:app", host=settings.host, port=settings.port)

@@ -50,6 +50,26 @@ class Settings(BaseSettings):
     # allowed explicitly; comma-separated, no trailing slash. Example:
     #   MICROCT_ALLOWED_ORIGINS=https://microctweb.vercel.app
     allowed_origins: str = ""
+    # Serve a different frontend build from "/" instead of the bundled SPA.
+    # Point this at the Next.js static export (`microctweb/out`) to run the new
+    # UI same-origin — no CORS, no Private Network Access preflight, works
+    # offline, and works when a hosted deployment is unavailable. Empty = use the
+    # SPA that ships inside the package.
+    web_dir: Optional[Path] = None
+
+    # Demand the bearer token from LOCAL callers too. Off by default.
+    #
+    # The token exists to authenticate callers that are NOT on this machine — a
+    # page hosted on Vercel, say. A request from this machine (the bundled UI at
+    # "/", another local tool, curl) is already as trusted as the machine itself,
+    # and the browser's own origin rules stop a public website from pretending to
+    # be local: it always attaches its real Origin to a cross-origin request.
+    # So local callers are exempt, which keeps the local dashboard zero-config
+    # while remote access still requires the secret.
+    #
+    # Set this to true to require the token from everyone, including localhost.
+    require_token_local: bool = False
+
     # Shared secret required in `Authorization: Bearer <token>` on /api/*.
     # REQUIRED whenever allowed_origins names a non-local origin: it is what stops
     # an arbitrary website from driving this API, and because it is a custom header
@@ -72,6 +92,14 @@ class Settings(BaseSettings):
     @property
     def thumbs_dir(self) -> Path:
         return self.state_dir / "thumbnails"
+
+    @property
+    def frontend_dir(self) -> Path:
+        """Directory served at "/". Falls back to the bundled SPA if the
+        configured one does not exist, so a stale path cannot take the UI down."""
+        if self.web_dir and Path(self.web_dir).is_dir():
+            return Path(self.web_dir)
+        return WEB_DIR
 
     @property
     def analyses_dir(self) -> Path:

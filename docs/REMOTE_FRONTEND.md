@@ -30,25 +30,42 @@ over loopback rather than the internet — so the viewer stays fast.
 
 ### 1. Configure this server
 
-In `.env`:
+One line in `.env`:
 
 ```ini
 # The exact origin of the hosted UI. Comma-separated, no trailing slash.
 MICROCT_ALLOWED_ORIGINS=https://microctweb.vercel.app
-
-# Shared secret the UI must send on every request.
-MICROCT_API_TOKEN=<paste a generated token>
 ```
 
-Generate a token with:
+Restart, open the hosted page, and it connects. **No token is needed by
+default** — that is the point: a colleague installs the server, opens the page,
+and it works against their own machine with nothing to paste.
+
+Only the origins listed here may reach the server; every other website is
+refused by the browser. Requests carrying no `Origin`, or a `localhost` one, are
+treated as coming from this machine and are always allowed.
+
+### Adding a token (optional)
+
+For a shared or less trusted machine you can additionally require a secret:
+
+```ini
+MICROCT_API_TOKEN=<generate one>
+```
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Restart the server. It refuses to stay quiet about a misconfiguration: if
-`ALLOWED_ORIGINS` names a non-localhost origin and no token is set, it emits a
-warning at startup, because that combination leaves the API open to any website.
+Once set, the hosted UI must send `Authorization: Bearer <token>` on every
+request; paste it into its Connection panel. **Pages served from this machine
+stay exempt**, so the built-in dashboard at `http://127.0.0.1:8000` keeps working
+with no configuration. Set `MICROCT_REQUIRE_TOKEN_LOCAL=true` to demand it from
+everyone, including localhost.
+
+`GET /api/health` reports `auth_required` **for the asking caller** rather than
+merely whether a token exists, so a local page is never told to produce a secret
+it does not need.
 
 ### 2. Configure the UI
 

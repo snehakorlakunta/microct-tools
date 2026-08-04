@@ -1,6 +1,7 @@
 """FastAPI application: API + static frontend."""
 from __future__ import annotations
 
+import re
 import secrets
 import warnings
 
@@ -32,13 +33,39 @@ _PROTECTED_PREFIXES = ("/api/",)
 _PROTECTED_EXACT = {"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
 
 
+LOCAL_ORIGIN_RE = re.compile(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$")
+
+
+def _is_local_caller(request: Request) -> bool:
+    """True when the request comes from this machine rather than a hosted page.
+
+    A browser always attaches the page's real `Origin` to a cross-origin request,
+    so a public website cannot pass itself off as local here. No `Origin` at all
+    means a same-origin page (the bundled UI) or a local tool like curl.
+    """
+    origin = request.headers.get("origin")
+    return not origin or bool(LOCAL_ORIGIN_RE.match(origin))
+
+
+def _needs_token(request: Request) -> bool:
+    if not settings.api_token:
+        return False
+    if settings.require_token_local:
+        return True
+    return not _is_local_caller(request)
+
+
 @app.get("/api/health", tags=["system"])
-def health():
+def health(request: Request):
     return {
         "ok": True,
         "app": "microct-seg-lab",
         "version": app.version,
-        "auth_required": bool(settings.api_token),
+        # Whether THIS caller needs a token, not merely whether one is
+        # configured. A page served from this machine is exempt, and telling it
+        # otherwise would make the UI demand a secret it never has to send.
+        "auth_required": _needs_token(request),
+        "auth_configured": bool(settings.api_token),
     }
 
 
@@ -105,7 +132,7 @@ async def _require_token(request: Request, call_next):
     # endpoint. That is an unauthenticated read of every dataset, from one
     # attacker-controlled header.
     path = get_route_path(request.scope)
-    if settings.api_token and _is_protected(path) and request.method != "OPTIONS":
+    if _needs_token(request) and _is_protected(path) and request.method != "OPTIONS":
         # ^ preflight carries no Authorization header, so it must stay exempt.
         sent = request.headers.get("authorization", "")
         expected = f"Bearer {settings.api_token}"
@@ -139,13 +166,10 @@ app.add_middleware(
     max_age=600,
 )
 
-if settings.remote_origins and not settings.api_token:
-    warnings.warn(
-        "MICROCT_ALLOWED_ORIGINS names a non-local origin "
-        f"({', '.join(settings.remote_origins)}) but MICROCT_API_TOKEN is unset. "
-        "The API is reachable from that origin with no authentication. Set a token.",
-        stacklevel=2,
-    )
+# The security posture is reported by the startup banner in cli.py rather than
+# warned about here: allowing a remote origin without a token is a supported
+# configuration (it is what lets a colleague open the hosted UI and have it work
+# against their own machine), not a mistake to be scolded for.
 
 # Ensure the registry tables exist as soon as the app is imported (works under
 # uvicorn, tests, and any WSGI/ASGI host — not only the startup event).
@@ -160,5 +184,8 @@ app.include_router(projects.router)
 app.include_router(analyses.router)
 app.include_router(measurements.router)
 
-# Serve the SPA at "/" (registered last so /api/* routes win).
-app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+# Serve the frontend at "/" (registered last so /api/* routes win). This is the
+# bundled SPA unless MICROCT_WEB_DIR points at another build — e.g. the Next.js
+# static export, which then runs same-origin: no CORS, no Private Network Access
+# preflight, no dependency on a hosted deployment being reachable.
+app.mount("/", StaticFiles(directory=str(settings.frontend_dir), html=True), name="web")
