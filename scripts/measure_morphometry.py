@@ -42,6 +42,34 @@ COMMON OPTIONS
                             pipeline hard-codes 4.0 um for ITS OWN output.xlsx;
                             this script recomputes every mm value from --spacing-um
                             so the consolidated JSON is correct even when they differ.
+                            Recomputing fixes the UNITS but not the GEOMETRY — see
+                            --allow-spacing-mismatch.
+  --skip-mask-qc            skip the pre-measurement checks on the input mask.
+  --allow-spacing-mismatch  measure even when --spacing-um is materially not 4 um.
+                            Refused by default: digitpipe_v5's downsample factor,
+                            shrink-wrap percentiles and socket erosion radii are
+                            voxel counts tuned for a 4 um grid, so at another
+                            spacing they cover the wrong physical distance and the
+                            (correctly scaled) mm numbers describe a structurally
+                            wrong segmentation. Using this stamps the record.
+
+=====================================================================================
+MASK QC — what is checked before the pipeline is started at all
+=====================================================================================
+Socket detection alone is ~25 minutes of CPU per case, so the input mask is
+checked first: spacing against the pipeline's 4 um assumption, foreground
+fraction, and connected-component structure. Blocking findings stop the run
+before anything is copied; warnings are recorded under "mask_qc" in the result
+JSON alongside the mask's own statistics. See src/microct_lab/maskqc.py for the
+thresholds and where each came from. This is separate from, and runs before,
+the morphqc plausibility checks on the resulting numbers.
+
+Stage 0 of the pipeline keeps only the largest connected component (plus a
+second within 0.05 mm) and discards the rest, reporting what it dropped on
+stdout and nowhere else. That line is parsed out of the stream and recorded as
+`downsample_removed_voxels` / `downsample_removed_fraction`, because on a
+fragmented mask it can be a sixth of the segmentation and every metric here
+describes only what survived it.
 
 =====================================================================================
 METRIC KEY PROVENANCE  (read this before trusting / changing the parser)
@@ -151,6 +179,17 @@ PIPELINE_FAILURE_MARKERS = (
     "Socket metrics not found",
 )
 
+# Stage 0 keeps only the largest connected component (plus a second one if it is
+# within SECONDARY_COMPONENT_MAX_DISTANCE_MM of it) and throws the rest away. It
+# reports what it dropped on stdout and nowhere else — run_pipeline.py line ~139:
+#   removed_str = f" (removed {removed:,}, kept {kept_components} comp)"
+#   print(f"  [{idx}/{n}] {sample}: {shape} -> {ds_shape}{removed_str}")
+# so the only record that any of the segmentation was discarded is a line of log
+# text that nothing reads. On R2 that discard is ~17% of the foreground. Capture
+# it here and put it in the measurement record, where it can be seen.
+DOWNSAMPLE_DISCARD_RE = re.compile(
+    r"\(removed\s+([\d,]+),\s+kept\s+(\d+)\s+comp\)")
+
 # Label meanings of the annotated volume the pipeline emits (see docstring).
 ANNOTATED_LABELS = {
     1: "bone", 2: "socket", 3: "line_outside_bone", 4: "line_inside_bone",
@@ -207,6 +246,75 @@ def stage_inputs(mask, image, out, case):
     shutil.copyfile(image, dst_image)
     log(f"[prepare] images/{case}.nii.gz  <- {image}")
     return dst_mask, dst_image
+
+
+def _import_app_module(name):
+    """Import a microct_lab module without requiring the package to be installed.
+
+    This script is also run standalone on a measurement box, so src/ may not be
+    on the path. Mirrors what the morphqc import below already does.
+    """
+    src = os.path.join(REPO_ROOT, "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    import importlib
+    return importlib.import_module(f"microct_lab.{name}")
+
+
+def run_mask_qc(mask, image, spacing_um, allow_spacing_mismatch):
+    """Check the mask BEFORE handing it to the pipeline. Returns the QC record.
+
+    Blocking findings call die() — the whole point is to spend seconds counting
+    voxels instead of ~25 minutes detecting a socket in something that could
+    never have produced a meaningful one.
+
+    --allow-spacing-mismatch downgrades the spacing gate to a warning rather
+    than removing it: measuring at a spacing digitpipe_v5 was not built for is a
+    legitimate thing to choose, but the record has to say it was chosen.
+    """
+    try:
+        maskqc = _import_app_module("maskqc")
+    except Exception as e:  # noqa: BLE001 — QC that cannot load must not kill a run
+        log(f"[maskqc] UNAVAILABLE: {type(e).__name__}: {e}")
+        log("[maskqc] the input mask is unchecked — treat the result as unverified.")
+        return {"checked": False, "error": f"{type(e).__name__}: {e}",
+                "findings": [], "stats": {}}
+
+    findings, stats = maskqc.check_mask_file(mask, spacing_um=spacing_um, image_path=image)
+
+    downgraded = []
+    if allow_spacing_mismatch:
+        for f in findings:
+            if f["code"] == "spacing_mismatch" and f["severity"] == "fail":
+                f["severity"] = "warn"
+                f["message"] += " (downgraded by --allow-spacing-mismatch)"
+                downgraded.append(f["code"])
+
+    if stats:
+        log(f"[maskqc] {stats.get('foreground_voxels', 0):,} foreground voxels "
+            f"({stats.get('foreground_fraction', 0):.4%} of volume), "
+            f"{stats.get('components')} component(s), largest holds "
+            f"{stats.get('largest_component_fraction', 0):.1%}")
+    for f in findings:
+        log(f"[maskqc] {f['severity']:5s} {f['code']}: {f['message']}")
+    if not findings:
+        log("[maskqc] mask looks plausible — no findings")
+
+    record = {
+        "checked": True,
+        "findings": findings,
+        "stats": stats,
+        "spacing_mismatch_allowed": bool(allow_spacing_mismatch),
+        "downgraded": downgraded,
+    }
+
+    blocking = maskqc.failures(findings)
+    if blocking:
+        die(f"mask QC refused case {os.path.basename(mask)!r} before measuring:\n  "
+            + "\n  ".join(f"{f['code']}: {f['message']}" for f in blocking)
+            + "\n(pass --skip-mask-qc to measure anyway, or "
+              "--allow-spacing-mismatch if the only problem is the voxel size)")
+    return record
 
 
 # ----------------------------------------------------------------- metric parsing
@@ -538,6 +646,13 @@ def main():
     ap.add_argument("--skip-viz", action="store_true", help="Skip the GIF visualization stage")
     ap.add_argument("--spacing-um", type=float, default=4.0,
                     help="Voxel size in micrometres (used for the mm conversions)")
+    ap.add_argument("--skip-mask-qc", action="store_true",
+                    help="Skip the pre-measurement mask checks entirely (see maskqc.py)")
+    ap.add_argument("--allow-spacing-mismatch", action="store_true",
+                    help="Measure even when --spacing-um is not the ~4 um digitpipe_v5's "
+                         "geometry assumes. The mm values stay correctly scaled, but the "
+                         "pipeline's voxel-count parameters span the wrong physical "
+                         "distance. Stamped into the measurement record.")
     args = ap.parse_args()
 
     case = re.sub(r"[^A-Za-z0-9._-]+", "_", args.case).strip("_") or "case"
@@ -550,7 +665,16 @@ def main():
     log(f"=== morphometry: case={case} pipeline={args.pipeline} "
         f"spacing={args.spacing_um} um (CPU) ===")
 
-    # 1) stage the inputs the way the pipeline expects
+    # 1) check the mask, THEN stage it. The order matters: a blocking finding
+    #    should stop before anything is copied, so a refused case leaves no
+    #    half-built target dir behind to be mistaken for a real one.
+    if args.skip_mask_qc:
+        log("[maskqc] SKIPPED by --skip-mask-qc — the input mask is unchecked.")
+        mask_qc = {"checked": False, "skipped": True, "findings": [], "stats": {}}
+    else:
+        mask_qc = run_mask_qc(args.mask, args.image, args.spacing_um,
+                              args.allow_spacing_mismatch)
+
     t0 = time.time()
     stage_inputs(args.mask, args.image, out, case)
     prepare_sec = time.time() - t0
@@ -572,6 +696,7 @@ def main():
     # read them if we capture them. Still echoed line by line so the worker's log
     # looks exactly as before.
     stage_failures: list[str] = []
+    discarded: list[dict] = []
     try:
         proc = subprocess.Popen(cmd, cwd=folder, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True,
@@ -590,6 +715,11 @@ def main():
         stripped = line.strip()
         if any(mark in stripped for mark in PIPELINE_FAILURE_MARKERS):
             stage_failures.append(stripped)
+        m = DOWNSAMPLE_DISCARD_RE.search(stripped)
+        if m:
+            discarded.append({"removed_voxels": int(m.group(1).replace(",", "")),
+                              "kept_components": int(m.group(2)),
+                              "line": stripped})
     rc = proc.wait()
     pipeline_sec = time.time() - t1
     sys.stdout.flush()
@@ -661,10 +791,7 @@ def main():
     # numbers nothing ever looked at. That is the one outcome this whole feature
     # exists to prevent, so the distinction is recorded explicitly.
     try:
-        sys.path.insert(0, os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
-        from microct_lab.morphqc import evaluate
-        qc = evaluate(metrics)
+        qc = _import_app_module("morphqc").evaluate(metrics)
         metrics["qc_warnings"] = qc
         metrics["qc_checked"] = True
         if qc:
@@ -678,6 +805,24 @@ def main():
         metrics["qc_error"] = f"{type(e).__name__}: {e}"
         log(f"[qc] plausibility checks UNAVAILABLE: {type(e).__name__}: {e}")
         log("[qc] these metrics are unchecked — treat them as unverified.")
+    # What stage 0 threw away before any of the above was computed. Reported by
+    # the pipeline on stdout only; without this it leaves no trace at all.
+    if discarded:
+        removed = sum(d["removed_voxels"] for d in discarded)
+        kept = max(d["kept_components"] for d in discarded)
+        metrics["downsample_removed_voxels"] = removed
+        metrics["downsample_kept_components"] = kept
+        fg = (mask_qc.get("stats") or {}).get("foreground_voxels")
+        if fg:
+            share = removed / fg
+            metrics["downsample_removed_fraction"] = round(share, 4)
+            log(f"[note] stage 0 discarded {removed:,} voxels ({share:.1%} of the "
+                f"mask's foreground), keeping {kept} connected component(s). Every "
+                f"metric below describes only what was kept.")
+        else:
+            log(f"[note] stage 0 discarded {removed:,} voxels, keeping {kept} "
+                f"connected component(s).")
+
     parse_sec = time.time() - t2
     timings["parse"] = round(parse_sec, 1)
     timings["total"] = round(prepare_sec + pipeline_sec + parse_sec, 1)
@@ -688,6 +833,10 @@ def main():
         "pipeline_version": args.pipeline,
         "spacing_um": args.spacing_um,
         "skip_viz": bool(args.skip_viz),
+        # Always present, whatever the outcome — same reasoning as qc_checked
+        # below: "checked, all clear" and "never checked" must not be
+        # indistinguishable to a reader.
+        "mask_qc": mask_qc,
         "output_dir": out,
         "annotated_nii": annotated,
         "annotated_labels": {str(k): v for k, v in ANNOTATED_LABELS.items()},

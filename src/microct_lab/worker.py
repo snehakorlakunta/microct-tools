@@ -235,6 +235,13 @@ def _execute_measurement(db, m: Measurement) -> None:
     ]
     if p.get("skip_viz"):
         cmd.append("--skip-viz")
+    # Mask QC settings are server-wide policy, not per-job — a caller should not
+    # be able to opt out of the checks by crafting a request body. Both are read
+    # from settings only.
+    if not settings.morph_mask_qc:
+        cmd.append("--skip-mask-qc")
+    elif settings.morph_allow_spacing_mismatch:
+        cmd.append("--allow-spacing-mismatch")
 
     returncode, canceled = _run_subprocess(cmd, log_path, m.id, Measurement)
     if canceled:

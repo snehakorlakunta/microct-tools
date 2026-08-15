@@ -329,6 +329,30 @@ name the required tag rather than assuming it. Set
 `MICROCT_MORPH_REQUIRE_ANATOMY=false` to measure other anatomy anyway — do that
 only if you intend to judge every number yourself.
 
+**The mask is also checked, before the pipeline starts.** The anatomy gate asks
+whether the *dataset* is the right kind of thing; this asks whether the *mask* is
+usable at all. It runs in seconds, ahead of the ~25 minutes socket detection
+costs, and covers three things:
+
+- **Voxel spacing.** More than 1% off 4 µm is refused. The mm conversions would
+  still be right, but the pipeline's downsample factor and socket erosion radii
+  are voxel counts tuned for a 4 µm grid — at another spacing they span the wrong
+  physical distance, and you get correctly-scaled numbers off a structurally
+  wrong segmentation. `MICROCT_MORPH_ALLOW_SPACING_MISMATCH=true` (or
+  `--allow-spacing-mismatch` on the script) downgrades this to a warning and
+  stamps the record.
+- **Foreground fraction.** An empty mask, or one where nearly the whole volume is
+  foreground, is refused. An unusual-but-plausible fraction only warns.
+- **Fragmentation.** Recorded, never blocking. Worth knowing because stage 0 of
+  the pipeline keeps only the largest connected component (plus a second within
+  0.05 mm) and silently discards the rest — on R2 that is 16.85% of the mask. How
+  much was discarded now appears on the result as
+  `downsample_removed_voxels` / `downsample_removed_fraction`.
+
+`MICROCT_MORPH_MASK_QC=false` turns the whole check off. Findings are written to
+`mask_qc` on the measurement record whatever the outcome, including when nothing
+tripped — "checked, all clear" and "never checked" must not look the same.
+
 Past the gate, the interface still checks each result against a reference range
 and shows a warning banner, hiding the numbers behind an acknowledgement when
 something looks wrong. **Treat that banner as a stop sign, not a suggestion.** If

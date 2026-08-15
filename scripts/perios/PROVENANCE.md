@@ -86,6 +86,62 @@ After re-vendoring, re-check the metric key names documented in
 `scripts/measure_morphometry.py` (see the `METRIC KEY PROVENANCE` comment there) —
 the parser is defensive but the *names* were read out of this exact commit.
 
+Also re-check `tests/test_pipeline_output_parsing.py`. This app reads two things
+out of `run_pipeline.py`'s **stdout** — the per-stage `[FAIL]` markers and the
+stage-0 `(removed N, kept K comp)` discard line — because neither is available
+any other way. Those are a contract with a file we do not control, and a
+re-vendor is exactly when they break silently.
+
+---
+
+## Checked against `perios2`, 2026-08-15 — nothing to re-vendor
+
+A second sibling repo exists: <https://github.com/snehakorlakunta/perios2>
+(fork of `mwilde49/perios2`), described as "nnU-Net v2 inference bridge feeding
+perios's digit bone-length measurement pipeline". It is **not a newer perios**.
+It carries `perios` as a pinned git submodule at
+`88bedbaaee4e28a1b0b46ac48377af0aeb38499d` — byte-for-byte the same commit
+vendored here — and `mwilde49/perios` has had no commits since 2026-07-22. So
+the morphometry code in `digitpipe_v5/` is current; there is nothing to pull.
+
+What `perios2` *does* have is the harness around that pipeline, and several
+pieces of it were adopted here on 2026-08-15:
+
+| From `perios2` | Landed here as |
+|---|---|
+| `qc.py` — ground-truth-free checks on a prediction before measuring | `src/microct_lab/maskqc.py` (thresholds re-derived — see below) |
+| Hard voxel-spacing assertion at intake | `maskqc.check_spacing` + `--allow-spacing-mismatch` |
+| `--low-vram` for the large-volume CUDA OOM | `segment_microct.py --low-vram` |
+| Hard failure when `--device cuda` is unavailable | `segment_microct.py` |
+| Stage 0's component discard is printed and never persisted | `downsample_removed_voxels` / `_fraction` in the measurement record |
+| 15-case validation + 9-case reference comparison | `tests/test_morphqc.py` |
+
+Two things `perios2` identified were **already solved here independently** and
+needed no change: translating `run_pipeline.py`'s always-zero exit code into a
+real one (`PIPELINE_FAILURE_MARKERS`, which `perios2` calls the finding all three
+of its reviews converged on), and the `labels/` + `images/` exact-filename
+pairing (`stage_inputs`).
+
+The QC thresholds were **not** copied verbatim. `perios2`'s foreground-fraction
+band (0.021–0.160) came from tightly-cropped `Digit*` volumes; this app ingests
+whole SkyScan reconstructions, and R2 — a real, successfully-measured dataset
+here — sits at 0.0168, below that floor. Adopting the band unchanged would have
+blocked it. See the module docstring in `maskqc.py` for what was changed and why.
+
+**Model identity, corrected.** `perios2`'s `CLAUDE.md` documents that the
+checkpoint's `Dataset501_Glioblastoma` folder name and its `AureliusAnalytics`
+`dataset.json` name are both leftover scaffolding. Verified directly against the
+copy at `C:\skscan\snehawa\microct\Dataset501_...`: 55 training cases, every one
+named `Digit<N>_<idx>`, 0.004 mm isotropic, binary background/ROI, CV Dice 0.968.
+It is a digit/phalanx bone model. Earlier notes in this project that called it "a
+glioblastoma model" were wrong; see `DECISIONS.md` §1.2 for the correction and
+the better-evidenced explanation of R2's outlying numbers.
+
+Nothing from `perios2` was vendored as code — only the reasoning was, and it was
+reimplemented against this app's own data. Its `PRODUCTION_READINESS_PLAN.md`
+(SLURM/BioHPC array jobs, sharding, containerisation) is out of scope here: this
+app is a single-machine local lab, not a cluster deployment.
+
 ---
 
 ## Runtime dependencies of the vendored code

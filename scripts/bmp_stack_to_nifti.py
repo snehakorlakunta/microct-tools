@@ -8,9 +8,11 @@ volume (.nii.gz) that nnU-Net v2 can read for inference.
 
 Why this is needed
 ------------------
-Your trained model (Dataset501_Glioblastoma, 3d_fullres) was trained on
-.nii.gz volumes at 0.004 mm (4 um) ISOTROPIC voxel spacing, single grayscale
-channel. Your R2 / R4 reconstructions are stacks of 2D BMP slices at the same
+Your trained model (folder name Dataset501_Glioblastoma, 3d_fullres) was trained
+on .nii.gz volumes at 0.004 mm (4 um) ISOTROPIC voxel spacing, single grayscale
+channel. Ignore the folder name — it is leftover nnU-Net tutorial scaffolding.
+The checkpoint is a digit/phalanx bone model: 55 training cases, all named
+Digit<N>_<idx>, binary background/ROI, mean CV Dice 0.968. See morphqc.py. Your R2 / R4 reconstructions are stacks of 2D BMP slices at the same
 4 um pixel size. nnU-Net needs them as ONE 3D file named  <CASE>_0000.nii.gz
 (the _0000 is the channel index) with the correct spacing baked into the header.
 

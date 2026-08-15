@@ -8,10 +8,29 @@ not fail — it runs all eight stages, exits cleanly, and emits a full set of
 numbers that look entirely ordinary. Stage 4 will happily label whatever
 concavity it finds as "the basal socket".
 
-That was confirmed empirically. Running it on R2 (a glioblastoma-model
-segmentation, not a phalanx) produced `status=succeeded` with a socket volume 24x
-the reference mean — 68 standard deviations out — split across 10 disconnected
-components. Nothing in the pipeline or the worker flagged it.
+That was confirmed empirically. Running it on R2 produced `status=succeeded` with
+a socket volume 24x the reference mean — 68 standard deviations out — split
+across 10 disconnected components. Nothing in the pipeline or the worker flagged
+it.
+
+A correction to what this file used to say about that result. It attributed R2's
+numbers to the segmentation having come from "a glioblastoma model". That was
+wrong, and the name is the reason: the checkpoint's folder is
+`Dataset501_Glioblastoma` and its `dataset.json` calls itself
+`AureliusAnalytics`, but neither describes it. Its own cross-validation summary
+lists 55 training cases, every one of them named `Digit<N>_<idx>`, all at 0.004mm
+isotropic, binary background/ROI, mean Dice 0.968. It IS a digit/phalanx bone
+model — the same checkpoint the sibling `perios2` project validated to 0.942
+Dice on true holdouts. `Dataset501_Glioblastoma` is leftover scaffolding from an
+nnU-Net tutorial project folder that was reused without renaming.
+
+So the model was never the problem, and the conclusion is unchanged but rests on
+better evidence: R2's `phalanx_volume` came out at 0.789 mm3 against a reference
+mean of 0.184 — the object is 4.3x too large to be a mouse terminal phalanx —
+and its mask carries 72 connected components with only 83% of the foreground in
+the largest, so a sixth of it is discarded by stage 0 before anything is
+measured. The specimen and the mask explain the numbers. See `maskqc.py`, which
+now catches both of those before the pipeline runs at all.
 
 So these checks are not defensive paranoia about crashes; they are the only thing
 standing between a wrong-anatomy run and a number that reaches a figure. They are

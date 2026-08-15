@@ -45,6 +45,12 @@ microct-token = "microct_lab.cli:show_token"
 microct-ingest = "microct_lab.cli:ingest_cli"
 microct-register-model = "microct_lab.cli:register_model_cli"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# So `pytest` works from a clean checkout without `pip install -e .` first — the
+# QC modules are then importable straight from src/.
+pythonpath = ["src"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

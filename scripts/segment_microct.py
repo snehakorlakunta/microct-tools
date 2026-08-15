@@ -43,7 +43,16 @@ COMMON OPTIONS
                             slower. Off by default.
   --step 0.5                sliding-window overlap. 0.5 = default/most accurate.
                             0.7 is ~2-3x faster with a small accuracy cost.
-  --device auto             auto | cuda | cpu   (auto picks CUDA if available)
+  --device auto             auto | cuda | cpu
+                            "auto" picks CUDA when it is available and silently
+                            falls back to CPU when it is not. Asking for "cuda"
+                            explicitly is now an assertion: if CUDA is missing the
+                            run FAILS instead of quietly taking 30x longer on CPU.
+  --low-vram                keep sliding-window accumulation on CPU between patches
+                            instead of on the GPU. Slower, but it removes the peak
+                            VRAM spike that reproducibly crashes inference on the
+                            largest volumes with a CUDA/cuDNN error. Reach for this
+                            when a big case dies at peak memory.
   --spacing 0.004           voxel size in MM (4 um). Read "Image Pixel Size (um)" from the
                             *_rec.log and divide by 1000 if your scan differs.
   --pattern "*rec*.bmp"     glob for slice files (use "*.tif" for TIFF stacks). Files with
@@ -54,6 +63,13 @@ COMMON OPTIONS
 Validated on R2 (SkyScan 1272, 459 x 1128 x 1128, 4.00 um, 8-bit) against
 Dataset501_Glioblastoma (trained at 4 um isotropic, ZScore norm, Dice 0.968).
 Because the scan resolution matches the training resolution, no resampling loss occurs.
+
+Do not read anything into that model name. The checkpoint's folder is
+`Dataset501_Glioblastoma` and its dataset.json calls itself `AureliusAnalytics`;
+both are leftover scaffolding from an unrelated nnU-Net project. Its own
+cross-validation summary lists 55 training cases, every one named
+`Digit<N>_<idx>`, at 0.004 mm isotropic — it is a digit/phalanx bone model, and
+the sibling `perios2` project measured 0.942 Dice on cases it had never seen.
 """
 import argparse, glob, json, os, sys, time
 
@@ -200,6 +216,9 @@ def main():
     ap.add_argument("--tta", action="store_true", help="Enable test-time mirroring")
     ap.add_argument("--step", type=float, default=0.5, help="Sliding-window step (overlap)")
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    ap.add_argument("--low-vram", action="store_true",
+                    help="Accumulate the sliding window on CPU, not GPU. Slower, but "
+                         "avoids the peak-VRAM spike that crashes large volumes.")
     ap.add_argument("--spacing", type=float, default=0.004, help="Voxel size in mm")
     ap.add_argument("--pattern", default="*rec*.bmp", help="Slice filename glob")
     ap.add_argument("--checkpoint", default="checkpoint_final.pth")
@@ -220,9 +239,21 @@ def main():
         dev = "cuda" if torch.cuda.is_available() else "cpu"
     else:
         dev = args.device
+    # An EXPLICIT --device cuda is an assertion, not a preference. Silently
+    # falling back to CPU here is the worst available outcome: the run does not
+    # fail, it just takes ~30x longer and looks identical in the log until
+    # someone notices the wall time. A caller that wants either device should
+    # say "auto"; a caller that said "cuda" has a reason.
+    if args.device == "cuda" and not torch.cuda.is_available():
+        sys.exit("ERROR: --device cuda was requested but torch.cuda.is_available() "
+                 "is False. This is a CPU-only torch build, a missing or mismatched "
+                 "driver, or a container started without GPU access. Re-run with "
+                 "--device auto to fall back to CPU deliberately.")
     log(f"=== device: {dev} " + (f"({torch.cuda.get_device_name(0)})" if dev == "cuda" else "(CPU — slow)"))
     if dev == "cpu":
         torch.set_num_threads(os.cpu_count() or 8)
+    if args.low_vram and dev != "cuda":
+        log("[note] --low-vram only affects CUDA runs; ignored on CPU.")
 
     # 1) convert
     _tc = time.time()
@@ -235,6 +266,10 @@ def main():
     predictor = nnUNetPredictor(
         tile_step_size=args.step, use_gaussian=True, use_mirroring=args.tta,
         device=torch.device(dev), verbose=False, allow_tqdm=True,
+        # Where the sliding window's running logits live between patches. On GPU
+        # this is fast but its peak allocation scales with the volume, which is
+        # what kills the largest scans; on CPU it is slower but flat.
+        perform_everything_on_device=(dev == "cuda" and not args.low_vram),
     )
     predictor.initialize_from_trained_model_folder(
         args.model, use_folds=parse_folds(args.folds), checkpoint_name=args.checkpoint)
@@ -266,6 +301,27 @@ def main():
     except Exception as e:  # noqa: BLE001 — BMP export must never fail the run
         log(f"[bmp] mask BMP export skipped: {e}")
 
+    # Same checks morphometry runs before measuring, run here too — this is the
+    # first moment the mask exists, and a fragmented or empty segmentation is
+    # worth knowing about now rather than after someone queues a measurement.
+    # Advisory only: segmentation succeeds regardless, and nothing is blocked.
+    # Wrapped because this script is also copied bare to a GPU box that has only
+    # nnunetv2/SimpleITK/pillow/numpy — no microct_lab, no scipy. Missing either
+    # degrades to fewer checks, never to a failed run.
+    mask_qc = {"checked": False}
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+        from microct_lab.maskqc import check_mask_array, summarize
+        findings, stats = check_mask_array(seg, spacing_um=args.spacing * 1000.0)
+        mask_qc = {"checked": True, "findings": findings, "stats": stats}
+        for f in findings:
+            log(f"[maskqc] {f['severity']:5s} {f['code']}: {f['message']}")
+        log(f"[maskqc] {summarize(findings) or 'mask looks plausible'}")
+    except Exception as e:  # noqa: BLE001 — advisory; never fail a segmentation for it
+        mask_qc = {"checked": False, "error": f"{type(e).__name__}: {e}"}
+        log(f"[maskqc] unavailable: {type(e).__name__}: {e}")
+
     timings = {"convert_seconds": round(conv_sec, 1), "predict_seconds": round(dt, 1),
                "total_seconds": round(conv_sec + dt, 1)}
     result = {"case": case, "device": dev, "roi_voxels": n,
@@ -273,6 +329,7 @@ def main():
               "seg_shape": list(seg.shape), "best_slice": z,
               "mask_bmp_dir": bmp_dir, "mask_bmp_count": bmp_count,
               "predict_seconds": round(dt, 1), "folds": args.folds, "tta": args.tta,
+              "low_vram": bool(args.low_vram), "mask_qc": mask_qc,
               "environment": capture_env(dev, torch, timings)}
     json.dump(result, open(os.path.join(args.out, f"{case}_result.json"), "w"), indent=2)
     log(f"[result] {case}: ROI = {n:,} voxels = {n*vox_mm3:.4f} mm^3 "

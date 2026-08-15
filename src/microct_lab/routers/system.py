@@ -56,6 +56,11 @@ def config():
         # "phalanx" and going stale the moment the setting changes.
         "morph_require_anatomy": settings.morph_require_anatomy,
         "morph_anatomy_tags": settings.morph_anatomy_tag_list,
+        # Pre-measurement mask checks, for the same reason: a measurement that
+        # fails before the pipeline starts should be explicable from the API
+        # rather than needing the server log.
+        "morph_mask_qc": settings.morph_mask_qc,
+        "morph_allow_spacing_mismatch": settings.morph_allow_spacing_mismatch,
     }
 
 

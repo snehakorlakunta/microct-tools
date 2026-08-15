@@ -62,6 +62,20 @@ class Settings(BaseSettings):
     # Comma-separated tags, any ONE of which marks a dataset as measurable.
     morph_anatomy_tags: str = "phalanx"
 
+    # --- Pre-measurement mask QC (see maskqc.py) ---------------------------------
+    # Checks the MASK before the pipeline runs, not the numbers afterwards. Socket
+    # detection alone is ~25 min of CPU per case, so a mask that cannot yield a
+    # meaningful measurement is worth catching in the seconds it takes to count
+    # voxels. Blocking findings refuse the job; warnings are recorded and shown.
+    morph_mask_qc: bool = True
+    # Measure anyway when the voxel spacing is not the ~4um digitpipe_v5's geometry
+    # assumes. The mm values stay correctly scaled, but the pipeline's downsample
+    # factor and socket erosion radii are voxel counts tuned for a 4um grid, so
+    # they span the wrong physical distance — a structurally wrong segmentation
+    # with right-looking units. Off by default; a measurement made with this on is
+    # stamped as such in its record.
+    morph_allow_spacing_mismatch: bool = False
+
     # --- Remote frontend access -------------------------------------------------
     # A frontend hosted elsewhere (e.g. a Vercel-deployed Next.js build) runs in
     # the user's browser and calls THIS server on localhost. Its origin must be
