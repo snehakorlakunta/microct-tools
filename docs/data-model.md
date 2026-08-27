@@ -39,6 +39,12 @@ erDiagram
         string  name
         string  slices_path UK "folder of *_rec*.bmp"
         string  pattern "*rec*.bmp"
+        string  subtype "uct: digit | ho"
+        string  digit_id "L2..R4, parsed from name"
+        bool    unamputated "normalization reference"
+        json    edited_fields "manual edits, never clobbered"
+        json    crop_box "z0 z1 y0 y1 x0 x1 full-res voxels"
+        int     project_id FK "direct membership"
         string  scanner
         float   voxel_size_um
         int     width
@@ -47,7 +53,7 @@ erDiagram
         int     bit_depth
         string  study "group key (soft)"
         json    tags
-        json    log "raw *_rec.log"
+        json    log "raw *_rec.log (or _rec_Tra/Cor/Sag fallback)"
         string  thumbnail
         int     size_bytes
         bool    flagged
@@ -270,3 +276,37 @@ flowchart TD
 > unassigned and is organized into a set/experiment later. Datasets and runs are
 > never destroyed by deleting a project, experiment, or set: those operations only
 > unlink (null the FK). Runs can be archived but never deleted.
+
+
+---
+
+## 6. Additions from the Linux-review build (2026-08-26)
+
+- **Dataset category**: `Dataset.subtype` distinguishes **uct digit** from
+  **uct ho**. The digit-morphometry gate now keys on it (legacy `phalanx` tag
+  still honored; `init_db` backfills subtype from that tag). `digit_id`
+  (L2..R4) is parsed from the name at ingest (`registry.parse_digit_id`) and
+  `mouse_key()` groups same-animal scans by the name minus the digit token.
+- **Independent hierarchy**: `Dataset.project_id` exists alongside
+  `experiment_id`/`set_id`. Assigning a set fills experiment+project;
+  assigning an experiment fills project; clears cascade downward only.
+- **Set details**: `DatasetSet.organism/subtype` autofill members on
+  assignment and can be propagated on set edit — `all` or `unedited`
+  (skipping any field in `Dataset.edited_fields`, the manual-edit memory that
+  re-ingest also respects).
+- **app_settings**: tiny key/value table for runtime settings shared by the
+  server and worker processes (`parallel_gpu_runs`, `bvtv_threshold_hu`).
+- **Parallel worker**: up to `parallel_gpu_runs` segmentation subprocesses at
+  once, each pinned via `CUDA_VISIBLE_DEVICES` (slot -> GPU); measurements run
+  in their own thread. Limit re-read every loop, clamped to detected GPUs.
+- **Interim BV/TV**: `Measurement` rows with `pipeline_version=bvtv_thresh_v1`
+  are executed by `scripts/measure_bvtv.py` (threshold within the mask). The
+  HU threshold is converted per scan through the `_rec.log` CS window
+  (`bvtv.py`); the whole conversion is frozen into `Measurement.params`.
+- **Normalization analyses**: `Analysis.data` stores the computed
+  normalized-BV/TV table (`type=bvtv_normalization`).
+- **Crop**: `Dataset.crop_box` is applied before inference (snapshotted into
+  `Run.params.crop_box` at enqueue); `POST /runs/{id}/crop` retro-crops a
+  finished mask (original path kept in `params.mask_nii_original`). BMP
+  export has two modes: `mask` and `masked_image` (original pixels inside the
+  mask, black elsewhere), in separate folders.
