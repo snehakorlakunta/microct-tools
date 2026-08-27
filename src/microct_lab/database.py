@@ -49,9 +49,25 @@ _ADDED_COLUMNS = {
         ("experiment_id", "INTEGER"),
         ("nas_relpath", "VARCHAR(1024)"),
         ("archived", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("subtype", "VARCHAR(32)"),
+        ("digit_id", "VARCHAR(8)"),
+        ("unamputated", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("project_id", "INTEGER"),
+        ("edited_fields", "JSON NOT NULL DEFAULT '[]'"),
+        ("crop_box", "JSON"),
     ],
     "runs": [
         ("archived", "BOOLEAN NOT NULL DEFAULT 0"),
+    ],
+    "projects": [
+        ("project_lead", "VARCHAR(200)"),
+    ],
+    "dataset_sets": [
+        ("organism", "VARCHAR(64)"),
+        ("subtype", "VARCHAR(32)"),
+    ],
+    "analyses": [
+        ("data", "JSON"),
     ],
 }
 
@@ -70,7 +86,43 @@ def _add_missing_columns() -> None:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
 
+def _backfill() -> None:
+    """One-time-ish (idempotent, cheap) data fixups after column adds.
+
+    * subtype: a dataset already tagged with an anatomy tag (the old gate,
+      default 'phalanx') is a digit dataset — stamp it so the new subtype gate
+      doesn't lock out data that was working yesterday.
+    * project_id: derived from the experiment for rows that predate the column,
+      so project dataset counts and direct-membership queries see them.
+    * digit_id: parsed from the name where the pattern is unambiguous.
+    Only NULL fields are ever written, so user edits are never overwritten.
+    """
+    from .config import settings
+    from .models import Dataset, Experiment
+    from .registry import parse_digit_id
+
+    anatomy = set(settings.morph_anatomy_tag_list)
+    with SessionLocal() as db:
+        exp_project = dict(db.query(Experiment.id, Experiment.project_id).all())
+        changed = False
+        for d in db.query(Dataset).all():
+            if d.subtype is None and anatomy & {str(t).strip().lower() for t in (d.tags or [])}:
+                d.subtype = "digit"
+                changed = True
+            if d.project_id is None and d.experiment_id in exp_project:
+                d.project_id = exp_project[d.experiment_id]
+                changed = True
+            if d.digit_id is None and "digit_id" not in (d.edited_fields or []):
+                parsed = parse_digit_id(d.name)
+                if parsed:
+                    d.digit_id = parsed
+                    changed = True
+        if changed:
+            db.commit()
+
+
 def init_db() -> None:
     from . import models  # noqa: F401  (register tables)
     Base.metadata.create_all(engine)
     _add_missing_columns()
+    _backfill()

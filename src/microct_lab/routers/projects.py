@@ -2,20 +2,24 @@
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
-from ..models import Analysis, Dataset, DatasetSet, Experiment, Project
+from ..models import Analysis, Dataset, DatasetSet, Experiment, Project, Run
 from ..schemas import (ExperimentIn, ExperimentOut, ExperimentPatch, ProjectIn,
                        ProjectOut, ProjectPatch, SetIn, SetOut, SetPatch)
 from .. import stats as stats_mod
 
 router = APIRouter(prefix="/api", tags=["projects"])
+
+PROJECT_SORTS = {"created_at": Project.created_at, "name": Project.name,
+                 "project_lead": Project.project_lead}
 
 
 # --------------------------------------------------------------------- projects
@@ -23,23 +27,41 @@ def _project_out(db: Session, p: Project) -> ProjectOut:
     o = ProjectOut.model_validate(p)
     o.experiment_count = len(p.experiments)
     o.analysis_count = len(p.analyses)
-    exp_ids = [e.id for e in p.experiments]
-    o.dataset_count = (db.scalar(select(func.count()).select_from(Dataset)
-                       .where(Dataset.experiment_id.in_(exp_ids))) or 0) if exp_ids else 0
+    # Direct membership: project_id is stamped on the dataset whenever it is
+    # placed anywhere in this project (init_db backfills legacy rows).
+    o.dataset_count = db.scalar(select(func.count()).select_from(Dataset)
+                                .where(Dataset.project_id == p.id)) or 0
     return o
 
 
 @router.get("/projects", response_model=list[ProjectOut])
-def list_projects(include_archived: bool = False, db: Session = Depends(get_db)):
-    stmt = select(Project).order_by(Project.created_at.desc())
+def list_projects(include_archived: bool = False, q: Optional[str] = None,
+                  sort: str = "created_at", order: str = "desc",
+                  db: Session = Depends(get_db)):
+    stmt = select(Project)
     if not include_archived:
         stmt = stmt.where(Project.archived == False)  # noqa: E712
-    return [_project_out(db, p) for p in db.scalars(stmt).all()]
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(or_(Project.name.ilike(like),
+                              Project.project_lead.ilike(like),
+                              Project.description.ilike(like)))
+    col = PROJECT_SORTS.get(sort, Project.created_at)
+    stmt = stmt.order_by(col.desc() if order == "desc" else col.asc())
+    rows = db.scalars(stmt).all()
+    if q:  # tag matches — JSON list membership, filtered in Python (small volumes)
+        ql = q.lower()
+        extra = [p for p in db.scalars(select(Project)).all()
+                 if p not in rows and any(ql in str(t).lower() for t in (p.tags or []))
+                 and (include_archived or not p.archived)]
+        rows = list(rows) + extra
+    return [_project_out(db, p) for p in rows]
 
 
 @router.post("/projects", response_model=ProjectOut)
 def create_project(body: ProjectIn, db: Session = Depends(get_db)):
-    p = Project(name=body.name, description=body.description, tags=body.tags or [])
+    p = Project(name=body.name, project_lead=body.project_lead,
+                description=body.description, tags=body.tags or [])
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -59,7 +81,7 @@ def patch_project(project_id: int, body: ProjectPatch, db: Session = Depends(get
     p = db.get(Project, project_id)
     if not p:
         raise HTTPException(404, "project not found")
-    for field in ("name", "description", "tags", "archived"):
+    for field in ("name", "project_lead", "description", "tags", "archived"):
         val = getattr(body, field)
         if val is not None:
             setattr(p, field, val)
@@ -77,6 +99,9 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "project not found")
     if p.experiments:
         raise HTTPException(409, "project has experiments; remove them first")
+    # Unlink directly-attached datasets (never delete them).
+    for d in db.scalars(select(Dataset).where(Dataset.project_id == p.id)).all():
+        d.project_id = None
     db.delete(p)
     db.commit()
     return {"deleted": project_id}
@@ -161,11 +186,38 @@ def create_set(body: SetIn, db: Session = Depends(get_db)):
     if not db.get(Experiment, body.experiment_id):
         raise HTTPException(404, "experiment not found")
     s = DatasetSet(experiment_id=body.experiment_id, name=body.name,
-                   description=body.description, tags=body.tags or [])
+                   description=body.description, organism=body.organism,
+                   subtype=body.subtype, tags=body.tags or [])
     db.add(s)
     db.commit()
     db.refresh(s)
     return _set_out(s)
+
+
+def _propagate_set_details(db: Session, s: DatasetSet, mode: str) -> dict:
+    """Push the set's organism/subtype onto member datasets.
+
+    mode "all" overwrites every member; "unedited" skips a dataset for any field
+    it lists in edited_fields (a manual value is never clobbered silently).
+    Returns counts for the UI toast."""
+    updated = skipped = 0
+    for d in s.datasets:
+        edited = set(d.edited_fields or [])
+        wrote = False
+        for field in ("organism", "subtype"):
+            val = getattr(s, field)
+            if not val:
+                continue
+            if mode == "unedited" and field in edited:
+                skipped += 1
+                continue
+            if getattr(d, field) != val:
+                setattr(d, field, val)
+                wrote = True
+        if wrote:
+            updated += 1
+    db.commit()
+    return {"updated": updated, "skipped_fields": skipped}
 
 
 @router.patch("/sets/{set_id}", response_model=SetOut)
@@ -175,11 +227,22 @@ def patch_set(set_id: int, body: SetPatch, db: Session = Depends(get_db)):
         raise HTTPException(404, "set not found")
     if body.experiment_id is not None and not db.get(Experiment, body.experiment_id):
         raise HTTPException(404, "target experiment not found")
-    for field in ("name", "description", "tags", "experiment_id"):
+    if body.propagate not in ("none", "all", "unedited"):
+        raise HTTPException(400, "propagate must be one of: none, all, unedited")
+    for field in ("name", "description", "organism", "subtype", "tags", "experiment_id"):
         val = getattr(body, field)
         if val is not None:
             setattr(s, field, val)
+    # A set moved to another experiment takes its members along (set membership
+    # implies experiment membership — same rule as dataset PATCH).
+    if body.experiment_id is not None:
+        e = db.get(Experiment, body.experiment_id)
+        for d in s.datasets:
+            d.experiment_id = e.id
+            d.project_id = e.project_id
     db.commit()
+    if body.propagate in ("all", "unedited"):
+        _propagate_set_details(db, s, body.propagate)
     db.refresh(s)
     return _set_out(s)
 
@@ -204,14 +267,33 @@ def project_tree(project_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(404, "project not found")
 
+    # One grouped pass over runs: per-dataset run count + "has a succeeded run"
+    # (the green dot in the set view). Archived runs don't count.
+    run_rows = db.execute(
+        select(Run.dataset_id, Run.status, func.count())
+        .where(Run.archived == False)  # noqa: E712
+        .group_by(Run.dataset_id, Run.status)).all()
+    run_count: dict[int, int] = {}
+    has_success: set[int] = set()
+    for did, status, n in run_rows:
+        run_count[did] = run_count.get(did, 0) + n
+        if status == "succeeded":
+            has_success.add(did)
+
     def ds_node(d: Dataset) -> dict:
         return {"id": d.id, "name": d.name, "type": d.type,
+                "subtype": d.subtype, "digit_id": d.digit_id,
+                "unamputated": d.unamputated,
                 "voxel_size_um": d.voxel_size_um, "slices": d.slices,
+                "run_count": run_count.get(d.id, 0),
+                "has_success": d.id in has_success,
                 "tags": d.tags or []}
 
     experiments = []
     for e in sorted(p.experiments, key=lambda x: x.created_at):
         sets = [{"id": s.id, "name": s.name, "tags": s.tags or [],
+                 "organism": s.organism, "subtype": s.subtype,
+                 "description": s.description,
                  "datasets": [ds_node(d) for d in s.datasets]}
                 for s in sorted(e.sets, key=lambda x: x.created_at)]
         direct = db.scalars(select(Dataset).where(
@@ -220,13 +302,19 @@ def project_tree(project_id: int, db: Session = Depends(get_db)):
                     for a in db.scalars(select(Analysis).where(
                         Analysis.experiment_id == e.id)).all()]
         experiments.append({"id": e.id, "name": e.name, "type": e.type,
+                            "description": e.description,
                             "tags": e.tags or [], "sets": sets,
                             "datasets": [ds_node(d) for d in direct],
                             "analyses": analyses})
+    # Datasets placed directly in the project, not (yet) in any experiment.
+    proj_direct = db.scalars(select(Dataset).where(
+        Dataset.project_id == p.id, Dataset.experiment_id.is_(None))).all()
     proj_analyses = [{"id": a.id, "title": a.title, "type": a.type}
                      for a in p.analyses if a.experiment_id is None]
-    return {"id": p.id, "name": p.name, "description": p.description,
+    return {"id": p.id, "name": p.name, "project_lead": p.project_lead,
+            "description": p.description,
             "tags": p.tags or [], "experiments": experiments,
+            "datasets": [ds_node(d) for d in proj_direct],
             "analyses": proj_analyses}
 
 

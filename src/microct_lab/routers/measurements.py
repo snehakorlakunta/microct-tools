@@ -11,10 +11,12 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..bvtv import resolve_threshold
 from ..config import settings
 from ..database import get_db
-from ..models import Measurement, Run
-from ..registry import _safe, force_cancel, job_is_stuck, spacing_um_for
+from ..models import Dataset, Measurement, Run
+from ..registry import (_safe, force_cancel, get_app_setting, job_is_stuck,
+                        spacing_um_for)
 from ..schemas import MeasurementCreate, MeasurementOut, MeasurementPatch
 from ..stats import describe
 
@@ -56,24 +58,28 @@ def _anatomy_block_reason(run: Run) -> Optional[str]:
     """
     if not settings.morph_require_anatomy:
         return None
-    wanted = settings.morph_anatomy_tag_list
-    if not wanted:  # gate on, but nothing configured to match -> nothing to enforce
-        return None
     ds = run.dataset
     if ds is None:
         return (f"Run {run.id} has no dataset record, so its anatomy cannot be "
                 f"confirmed and morphometry is blocked. Set "
                 f"MICROCT_MORPH_REQUIRE_ANATOMY=false to disable this check.")
-    have = {str(t).strip().lower() for t in (ds.tags or [])}
-    if have & set(wanted):
+    # The primary gate is the dataset CATEGORY: uct digit vs uct ho. The legacy
+    # anatomy tag (default 'phalanx') still satisfies it, so datasets from
+    # before the category existed keep working (init_db also backfills subtype
+    # from that tag).
+    if (ds.type or "uct") == "uct" and ds.subtype == "digit":
         return None
-    quoted = " or ".join(repr(t) for t in wanted)
-    label = wanted[0] if len(wanted) == 1 else " / ".join(wanted)
-    return (f"Dataset {ds.name!r} is not marked as {label} anatomy, so morphometry "
-            f"is blocked. This pipeline is built for mouse terminal phalanx and "
-            f"returns plausible but meaningless numbers on other anatomy. Tag the "
-            f"dataset {quoted} to allow it, or set "
-            f"MICROCT_MORPH_REQUIRE_ANATOMY=false to disable this check.")
+    wanted = set(settings.morph_anatomy_tag_list)
+    have = {str(t).strip().lower() for t in (ds.tags or [])}
+    if wanted and (have & wanted):
+        return None
+    kind = f"{ds.type or 'uct'} {ds.subtype}" if ds.subtype else (ds.type or "uct")
+    return (f"Dataset {ds.name!r} is categorized as {kind!r}, not 'uct digit', so "
+            f"digit morphometry (bone length, socket) is blocked. This pipeline is "
+            f"built for mouse terminal phalanx and returns plausible but "
+            f"meaningless numbers on other anatomy. Set the dataset's subtype to "
+            f"'digit' to allow it, or set MICROCT_MORPH_REQUIRE_ANATOMY=false to "
+            f"disable this check.")
 
 
 def _case_from_run(run: Run) -> str:
@@ -105,6 +111,23 @@ def list_measurements(run_id: Optional[int] = None, dataset_id: Optional[int] = 
     return [_out(m) for m in db.scalars(stmt).all()]
 
 
+# Declared BEFORE /{measurement_id} so the literal path isn't swallowed by the
+# int path param.
+@router.get("/bvtv-threshold")
+def bvtv_threshold(dataset_id: int, hu: Optional[float] = None,
+                   db: Session = Depends(get_db)):
+    """Preview the HU -> grey conversion for one dataset (live in the UI as the
+    user edits the HU box). Uses the scan's own _rec.log CS window."""
+    ds = db.get(Dataset, dataset_id)
+    if not ds:
+        raise HTTPException(404, "dataset not found")
+    default_hu = get_app_setting(db, "bvtv_threshold_hu", settings.bvtv_threshold_hu)
+    out = resolve_threshold(ds.log, hu if hu is not None else default_hu)
+    out["dataset_id"] = dataset_id
+    out["default_hu"] = default_hu
+    return out
+
+
 # Declared BEFORE /{measurement_id} so "stats" isn't swallowed by the int path param.
 @router.get("/stats")
 def measurement_stats(dataset_id: Optional[int] = None, db: Session = Depends(get_db)):
@@ -132,6 +155,10 @@ def create_measurements(body: MeasurementCreate, db: Session = Depends(get_db)):
     if not _safe(body.pipeline_version) == body.pipeline_version:
         raise HTTPException(400, f"invalid pipeline_version: {body.pipeline_version!r}")
 
+    # The interim threshold BV/TV works on ANY uct segmentation (digit and ho
+    # alike) — the anatomy gate protects only the digit-specific pipeline.
+    is_bvtv = body.pipeline_version.startswith("bvtv")
+
     runs: list[Run] = []
     for rid in body.run_ids:
         run = db.get(Run, rid)
@@ -146,9 +173,10 @@ def create_measurements(body: MeasurementCreate, db: Session = Depends(get_db)):
         if not run.input_nii or not os.path.isfile(run.input_nii):
             raise HTTPException(400, f"run {rid} has no input volume on disk "
                                      f"({run.input_nii or 'input_nii unset'})")
-        blocked = _anatomy_block_reason(run)
-        if blocked:
-            raise HTTPException(400, blocked)
+        if not is_bvtv:
+            blocked = _anatomy_block_reason(run)
+            if blocked:
+                raise HTTPException(400, blocked)
         runs.append(run)
 
     made: list[Measurement] = []
@@ -158,13 +186,22 @@ def create_measurements(body: MeasurementCreate, db: Session = Depends(get_db)):
         params = {"skip_viz": bool(body.skip_viz), "spacing_um": spacing_um,
                   "mask_nii": run.mask_nii, "input_nii": run.input_nii,
                   "case": _case_from_run(run)}
+        if is_bvtv:
+            # Resolve the HU threshold to THIS scan's grey value and freeze the
+            # whole conversion into params, so the number is auditable later.
+            # No explicit HU in the request -> the runtime default (UI-editable
+            # app setting), then the .env default.
+            hu = body.threshold_hu if body.threshold_hu is not None else \
+                get_app_setting(db, "bvtv_threshold_hu", settings.bvtv_threshold_hu)
+            params.update(resolve_threshold(ds.log if ds else None, hu))
         m = Measurement(run_id=run.id, dataset_id=run.dataset_id, status="queued",
                         pipeline_version=body.pipeline_version, params=params)
         db.add(m)
         db.flush()  # get m.id
         # Same convention as registry.enqueue_runs: <results_root>/<case>__<what>__<id>
+        what = "bvtv" if is_bvtv else "morph"
         m.output_dir = str(Path(settings.results_root) /
-                           f"{_safe(params['case'])}__morph__m{m.id}")
+                           f"{_safe(params['case'])}__{what}__m{m.id}")
         made.append(m)
     db.commit()
     for m in made:

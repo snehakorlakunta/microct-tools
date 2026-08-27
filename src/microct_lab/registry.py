@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .logparse import read_log
-from .models import Dataset, Model, Run
+from .models import AppSetting, Dataset, Model, Run
 from .modelmeta import read_model_folder
 
 SLICE_EXTS = ("*rec*.bmp", "*rec*.tif", "*rec*.tiff")
@@ -19,6 +19,57 @@ SLICE_EXTS = ("*rec*.bmp", "*rec*.tif", "*rec*.tiff")
 
 def _safe(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_") or "item"
+
+
+# ------------------------------------------------------------------ app settings
+def get_app_setting(db: Session, key: str, default=None):
+    """Runtime setting from the shared key/value table (see models.AppSetting).
+
+    The server and the worker are separate processes, so a UI-changed setting
+    must live where both can see it — the DB. Falls back to `default` (usually
+    the env-var value) when no row exists."""
+    row = db.get(AppSetting, key)
+    if row is None:
+        return default
+    return (row.value or {}).get("v", default)
+
+
+def set_app_setting(db: Session, key: str, value) -> None:
+    row = db.get(AppSetting, key)
+    if row is None:
+        row = AppSetting(key=key, value={"v": value})
+        db.add(row)
+    else:
+        row.value = {"v": value}
+    db.commit()
+
+
+# ------------------------------------------------------------------ digit naming
+# Digit token inside a dataset name: side (L/R) + digit number (2-4), tolerating
+# the separators seen in real names — "L3", "R-T3" (BDNF-R-T3), "_L2_", "r4".
+# The lookbehind/lookahead keep it from firing inside words ("CTRL2" has no
+# standalone L) or longer numbers.
+_DIGIT_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])([LR])[-_ ]?T?([2-4])(?![0-9])", re.IGNORECASE)
+
+
+def parse_digit_id(name: str) -> Optional[str]:
+    """Extract a digit ID (L2..R4) from a dataset name, or None.
+
+    Ambiguity refuses to guess: if the name contains two DIFFERENT digit tokens
+    (say "L2" and "R3"), returns None rather than picking one."""
+    found = {f"{m.group(1).upper()}{m.group(2)}" for m in _DIGIT_TOKEN.finditer(name or "")}
+    return found.pop() if len(found) == 1 else None
+
+
+def mouse_key(name: str) -> str:
+    """Grouping key for 'same mouse': the dataset name with the digit token and
+    its separators stripped. `BDNF-R-T3` -> `BDNF`; a name without a digit token
+    is its own group. Used by the normalization analysis to pair an amputated
+    digit with the unamputated reference on the same animal."""
+    stripped = _DIGIT_TOKEN.sub("", name or "")
+    stripped = re.sub(r"[-_ ]{2,}", "-", stripped).strip("-_ ")
+    return stripped or (name or "")
 
 
 def spacing_um_for(run, ds=None) -> float:
@@ -181,11 +232,38 @@ def _thumbnail(name: str, slices: list[Path]) -> Optional[str]:
         return None
 
 
+# Preference order for a folder's reconstruction log. SkyScan writes plain
+# `*_rec.log`; some exports carry only per-orientation logs (`*_rec_Tra.log`,
+# `_Cor`, `_Sag`) — same INI format, same metadata, so any of them will do when
+# the plain one is absent.
+def _pick_rec_log(logs: list[Path]) -> Path:
+    def rank(p: Path) -> tuple:
+        n = p.name.lower()
+        if n.endswith("_rec.log"):
+            order = 0
+        elif n.endswith("_rec_tra.log"):
+            order = 1
+        elif n.endswith("_rec_cor.log"):
+            order = 2
+        elif n.endswith("_rec_sag.log"):
+            order = 3
+        else:
+            order = 4
+        return (order, n)
+    return sorted(logs, key=rank)[0]
+
+
 def ingest_root(db: Session, root: Optional[str] = None) -> dict:
     root = Path(root or settings.data_root)
     created, updated, skipped = [], [], 0
-    for logf in root.rglob("*_rec.log"):
-        folder = logf.parent
+    # Group every *_rec*.log by folder, then take the best log per folder — so a
+    # folder with only `_rec_Tra.log` still ingests, and a folder with several
+    # orientation logs still yields exactly one dataset.
+    by_folder: dict[Path, list[Path]] = {}
+    for logf in root.rglob("*_rec*.log"):
+        by_folder.setdefault(logf.parent, []).append(logf)
+    for folder in sorted(by_folder):
+        logf = _pick_rec_log(by_folder[folder])
         slices = _find_slices(folder)
         if not slices:
             skipped += 1
@@ -214,6 +292,10 @@ def ingest_root(db: Session, root: Optional[str] = None) -> dict:
         ds.size_bytes = size
         ds.thumbnail = _thumbnail(name, slices)
         ds.nas_relpath = nas_relpath_for(folder)
+        # Digit identity from the name — only when unset and never over a manual
+        # edit, so re-ingest cannot claw back a correction.
+        if ds.digit_id is None and "digit_id" not in (ds.edited_fields or []):
+            ds.digit_id = parse_digit_id(ds.name)
         db.commit()
         db.refresh(ds)
         (created if is_new else updated).append(ds.name)
@@ -237,6 +319,10 @@ def enqueue_runs(db: Session, dataset_ids: list[int], model_id: int, *,
         params = {"folds": folds, "tta": tta, "step": step,
                   "device": device or settings.default_device, "spacing_mm": spacing,
                   "pattern": ds.pattern}
+        # Snapshot the dataset's crop box (like spacing): the run must mean the
+        # same thing even if the box is edited or cleared afterwards.
+        if ds.crop_box and len(ds.crop_box) == 6:
+            params["crop_box"] = [int(v) for v in ds.crop_box]
         snapshot = {"id": model.id, "name": model.name, "family": model.family,
                     "version": model.version, "fingerprint": model.fingerprint,
                     "path": model.path, "configuration": model.configuration,

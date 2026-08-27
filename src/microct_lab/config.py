@@ -44,6 +44,24 @@ class Settings(BaseSettings):
     default_device: str = "auto"
     poll_seconds: float = 2.0
 
+    # How many segmentation runs the worker may execute CONCURRENTLY, each
+    # pinned to its own GPU via CUDA_VISIBLE_DEVICES. 1 = today's serial
+    # behavior. This is only the .env default — the UI writes a runtime
+    # override into the app_settings table (key "parallel_gpu_runs") that both
+    # server and worker read, so no restart is needed.
+    parallel_gpu_runs: int = 1
+
+    # --- Interim threshold BV/TV (see bvtv.py) -----------------------------------
+    # Bone threshold in Hounsfield units. The scans are 8-bit with HU
+    # calibration OFF, so this is converted per scan through the _rec.log's
+    # "CS to Image Conversion" window using mu_water below.
+    bvtv_threshold_hu: float = 800.0
+    # Linear attenuation of water (1/mm) for the HU->attenuation conversion.
+    # Default calibrated so 800 HU lands at grey ~77/255 on the R2 window
+    # (Max CS 0.132622), matching the empirical grey-80 threshold the perios
+    # pipeline uses. Re-pin against a CTAn export when one is available.
+    mu_water: float = 0.0222
+
     # How long a job may sit in "canceling" before the API reports it as stuck.
     # A cancel is a two-step handshake: the API flips the row to "canceling" and
     # the WORKER kills the subprocess and writes the terminal status. If no worker

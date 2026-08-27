@@ -53,7 +53,13 @@ class DatasetOut(BaseModel):
     slices_path: str
     pattern: str
     type: str = "uct"
+    subtype: Optional[str] = None
     organism: Optional[str] = None
+    digit_id: Optional[str] = None
+    unamputated: bool = False
+    edited_fields: list[str] = []
+    crop_box: Optional[list[int]] = None
+    project_id: Optional[int] = None
     set_id: Optional[int] = None
     experiment_id: Optional[int] = None
     nas_relpath: Optional[str] = None
@@ -168,6 +174,10 @@ class MeasurementCreate(BaseModel):
     run_ids: list[int]
     pipeline_version: str = "digitpipe_v5"
     skip_viz: bool = False
+    # bvtv_thresh only: the bone threshold in Hounsfield units, converted
+    # per-scan to a grey value from the scan's own _rec.log reconstruction
+    # window (see bvtv.py). Ignored by digitpipe.
+    threshold_hu: Optional[float] = None
 
 
 class MeasurementPatch(BaseModel):
@@ -182,6 +192,7 @@ class ProjectOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
+    project_lead: Optional[str] = None
     description: Optional[str] = None
     tags: list[str] = []
     archived: bool = False
@@ -210,6 +221,8 @@ class SetOut(BaseModel):
     experiment_id: int
     name: str
     description: Optional[str] = None
+    organism: Optional[str] = None
+    subtype: Optional[str] = None
     tags: list[str] = []
     created_at: UtcDateTime
     dataset_count: int = 0
@@ -228,6 +241,7 @@ class AnalysisOut(BaseModel):
     set_ids: list[int] = []
     run_ids: list[int] = []
     tags: list[str] = []
+    data: Optional[dict] = None
     created_at: UtcDateTime
 
 
@@ -273,12 +287,14 @@ class RunReview(BaseModel):
 
 class ProjectIn(BaseModel):
     name: str
+    project_lead: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[list[str]] = None
 
 
 class ProjectPatch(BaseModel):
     name: Optional[str] = None
+    project_lead: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[list[str]] = None
     archived: Optional[bool] = None
@@ -304,14 +320,23 @@ class SetIn(BaseModel):
     experiment_id: int
     name: str
     description: Optional[str] = None
+    organism: Optional[str] = None
+    subtype: Optional[str] = None
     tags: Optional[list[str]] = None
 
 
 class SetPatch(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    organism: Optional[str] = None
+    subtype: Optional[str] = None
     tags: Optional[list[str]] = None
     experiment_id: Optional[int] = None
+    # How to push organism/subtype changes onto member datasets:
+    #   "all"      — overwrite every member
+    #   "unedited" — skip datasets whose edited_fields shows a manual value
+    #   "none"     — change the set only (default)
+    propagate: str = "none"
 
 
 class AnalysisIn(BaseModel):
@@ -343,7 +368,12 @@ class AnalysisPatch(BaseModel):
 class DatasetPatch(BaseModel):
     name: Optional[str] = None
     type: Optional[str] = None
+    subtype: Optional[str] = None
     organism: Optional[str] = None
+    digit_id: Optional[str] = None
+    unamputated: Optional[bool] = None
+    crop_box: Optional[list[int]] = None
+    project_id: Optional[int] = None
     set_id: Optional[int] = None
     experiment_id: Optional[int] = None
     tags: Optional[list[str]] = None
@@ -354,3 +384,75 @@ class DatasetPatch(BaseModel):
     # Use a sentinel-free approach: absent = leave, present-null = clear membership
     clear_set: Optional[bool] = None
     clear_experiment: Optional[bool] = None
+    clear_project: Optional[bool] = None
+    clear_crop: Optional[bool] = None
+    # Clear the digit identity / subtype explicitly (None in the fields above
+    # means "leave unchanged", so clearing needs its own flag).
+    clear_digit_id: Optional[bool] = None
+
+
+class DatasetBulkRequest(BaseModel):
+    """One request, many datasets: independent assignment to project /
+    experiment / set, tag add/remove, and renames. Each dataset is settled
+    individually so one failure cannot abandon the rest."""
+    ids: list[int]
+    project_id: Optional[int] = None
+    experiment_id: Optional[int] = None
+    set_id: Optional[int] = None
+    clear_project: bool = False
+    clear_experiment: bool = False
+    clear_set: bool = False
+    add_tags: list[str] = []
+    remove_tags: list[str] = []
+    # id -> new name. The CLIENT computes final names (regex/pattern preview
+    # happens there), the server only applies + checks collisions — so what the
+    # preview showed is exactly what lands.
+    renames: dict[int, str] = {}
+
+
+class DatasetBulkRowResult(BaseModel):
+    id: int
+    ok: bool
+    error: Optional[str] = None
+    name: Optional[str] = None
+
+
+class DatasetBulkResult(BaseModel):
+    attempted: int
+    succeeded: int
+    failed: int
+    results: list[DatasetBulkRowResult]
+
+
+# ---- BV/TV normalization analysis ----
+
+class NormalizeBvtvRequest(BaseModel):
+    """Compute normalized BV/TV over the digit datasets of a set or experiment.
+
+    mode:
+      per_leg   — each dataset ÷ the unamputated reference on the same leg
+                  (side) of the same mouse
+      per_mouse — ÷ mean of that mouse's references (L and R together)
+      per_set   — ÷ mean of ALL references in the dataset's set
+    reference_dataset_ids: the ticked "unamputated" datasets. Persisted onto the
+    datasets' `unamputated` flag as a side effect so the choice sticks.
+    """
+    set_ids: list[int] = []
+    experiment_id: Optional[int] = None
+    mode: str = "per_leg"
+    reference_dataset_ids: list[int] = []
+    save: bool = False
+    title: Optional[str] = None
+
+
+class RunCropRequest(BaseModel):
+    """Retro-crop a finished run's mask: voxels outside the box are zeroed.
+    Box is [z0, z1, y0, y1, x0, x1], half-open, in the RUN's mask geometry."""
+    box: list[int]
+
+
+class SystemSettingsPatch(BaseModel):
+    # How many segmentation runs the worker may execute at once (1..gpu_count).
+    parallel_gpu_runs: Optional[int] = None
+    # Bone threshold default for the interim BV/TV measurement, in HU.
+    bvtv_threshold_hu: Optional[float] = None

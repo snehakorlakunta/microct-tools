@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Run
 from ..registry import enqueue_runs, force_cancel, job_is_stuck
-from ..schemas import RunCreate, RunOut, RunReview
+from ..schemas import RunCreate, RunCropRequest, RunOut, RunReview
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -284,9 +284,10 @@ def _case_from(run: Run) -> str:
     return "case"
 
 
-def _bmp_dir(run: Run) -> str:
+def _bmp_dir(run: Run, mode: str = "mask") -> str:
     base = run.output_dir or (os.path.dirname(run.mask_nii) if run.mask_nii else "")
-    return os.path.join(base, f"{_case_from(run)}_mask_bmp")
+    suffix = "maskimg_bmp" if mode == "masked_image" else "mask_bmp"
+    return os.path.join(base, f"{_case_from(run)}_{suffix}")
 
 
 def _bmp_summary(out_dir: str) -> Optional[dict]:
@@ -304,47 +305,151 @@ def _bmp_summary(out_dir: str) -> Optional[dict]:
     return {"count": len(files), "bytes": total, "dir": out_dir}
 
 
+def _bmp_mode(mode: str) -> str:
+    if mode not in ("mask", "masked_image"):
+        raise HTTPException(400, "mode must be 'mask' or 'masked_image'")
+    return mode
+
+
 @router.get("/{run_id}/bmp_status")
-def bmp_status(run_id: int, db: Session = Depends(get_db)):
-    """Whether the per-slice mask BMP stack already exists for this run."""
+def bmp_status(run_id: int, mode: str = "mask", db: Session = Depends(get_db)):
+    """Whether the per-slice BMP stack (of the given mode) exists for this run."""
     r = db.get(Run, run_id)
     if not r:
         raise HTTPException(404, "run not found")
-    out_dir = _bmp_dir(r)
+    out_dir = _bmp_dir(r, _bmp_mode(mode))
     summary = _bmp_summary(out_dir)
     if summary:
-        return {"exists": True, **summary}
-    return {"exists": False, "dir": out_dir,
+        return {"exists": True, "mode": mode, **summary}
+    return {"exists": False, "mode": mode, "dir": out_dir,
             "can_export": bool(r.mask_nii and os.path.exists(r.mask_nii))}
 
 
 @router.post("/{run_id}/export_bmp")
-def export_bmp(run_id: int, force: bool = False, db: Session = Depends(get_db)):
-    """Write (or reuse) the per-slice mask BMP stack for an existing run.
+def export_bmp(run_id: int, force: bool = False, mode: str = "mask",
+               db: Session = Depends(get_db)):
+    """Write (or reuse) the per-slice BMP stack for an existing run.
 
-    New runs generate this automatically; this endpoint back-fills older runs
-    (like the seeded R2 result) and lets you regenerate with ?force=true.
+    mode "mask" is the classic binary stack; "masked_image" writes the ORIGINAL
+    image pixels inside the mask and black elsewhere (reads the run's own
+    <case>_0000.nii.gz, which is aligned with the mask even for cropped runs).
+    New runs generate the mask stack automatically; this endpoint back-fills
+    older runs and regenerates with ?force=true.
     """
     from ..bmp_export import export_mask_bmp
 
+    mode = _bmp_mode(mode)
     r = db.get(Run, run_id)
     if not r:
         raise HTTPException(404, "run not found")
     if not r.mask_nii or not os.path.exists(r.mask_nii):
         raise HTTPException(404, "no mask available for this run")
-    out_dir = _bmp_dir(r)
+    image_path = None
+    if mode == "masked_image":
+        if not r.input_nii or not os.path.exists(r.input_nii):
+            raise HTTPException(404, "masked-image export needs the run's input "
+                                     "volume (<case>_0000.nii.gz), which is missing")
+        image_path = r.input_nii
+    out_dir = _bmp_dir(r, mode)
     if not force:
         summary = _bmp_summary(out_dir)
         if summary:
-            return {"cached": True, **summary}
+            return {"cached": True, "mode": mode, **summary}
     ds = r.dataset
     info = export_mask_bmp(
         r.mask_nii, out_dir,
         ds.slices_path if ds else None,
         (ds.pattern if ds and ds.pattern else "*rec*.bmp"),
+        image_path=image_path,
     )
     info["cached"] = False
     return info
+
+
+@router.post("/{run_id}/crop", response_model=RunOut)
+def retro_crop(run_id: int, body: RunCropRequest, db: Session = Depends(get_db)):
+    """Retro-crop a FINISHED run's mask: voxels outside the box are zeroed and a
+    new <case>_cropped.nii.gz becomes the run's mask.
+
+    This is the no-GPU fix for "artifacts / extra bone got segmented": the
+    segmentation is kept, but everything outside the box is discarded from the
+    mask, the ROI numbers are recomputed, and the cached viewer volumes are
+    rebuilt. The original mask file is never modified — its path is kept in
+    params["mask_nii_original"], so a crop can be undone by re-cropping wider
+    or restoring that path. Existing measurements for this run are flagged (not
+    deleted): their numbers describe the pre-crop mask.
+    """
+    r = db.get(Run, run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    if r.status != "succeeded":
+        raise HTTPException(400, f"run is {r.status} — only a succeeded run can be cropped")
+    if not r.mask_nii or not os.path.exists(r.mask_nii):
+        raise HTTPException(404, "no mask on disk for this run")
+    box = [int(v) for v in body.box]
+    if len(box) != 6 or any(box[i] >= box[i + 1] for i in (0, 2, 4)) or min(box) < 0:
+        raise HTTPException(400, "box must be [z0,z1,y0,y1,x0,x1] with each min < max")
+
+    import numpy as np
+    import SimpleITK as sitk
+
+    # Always crop from the ORIGINAL mask, so repeated crops adjust rather than
+    # compound: cropping [10..90] after [20..80] widens back out.
+    params = dict(r.params or {})
+    src_path = params.get("mask_nii_original") or r.mask_nii
+    img = sitk.ReadImage(src_path)
+    arr = sitk.GetArrayFromImage(img)  # (Z, Y, X)
+    z0, z1, y0, y1, x0, x1 = box
+    z1, y1, x1 = min(z1, arr.shape[0]), min(y1, arr.shape[1]), min(x1, arr.shape[2])
+    if z0 >= z1 or y0 >= y1 or x0 >= x1:
+        raise HTTPException(400, f"box collapses to nothing for mask shape {arr.shape}")
+    keep = np.zeros_like(arr)
+    keep[z0:z1, y0:y1, x0:x1] = arr[z0:z1, y0:y1, x0:x1]
+
+    base = r.output_dir or os.path.dirname(src_path)
+    case = _case_from(r)
+    out_path = os.path.join(base, f"{case}_cropped.nii.gz")
+    out_img = sitk.GetImageFromArray(keep)
+    out_img.CopyInformation(img)
+    sitk.WriteImage(out_img, out_path, useCompression=True)
+
+    # Recompute the ROI numbers with the run's own immutable spacing.
+    n = int((keep > 0).sum())
+    spacing_mm = float(params.get("spacing_mm") or 0.004)
+    params["mask_nii_original"] = src_path
+    params["retro_crop"] = [z0, z1, y0, y1, x0, x1]
+    r.params = params
+    r.mask_nii = out_path
+    r.roi_voxels = n
+    r.roi_mm3 = round(n * spacing_mm ** 3, 6)
+    r.roi_um3 = round(n * (spacing_mm ** 3) * 1e9, 1)
+
+    # Stale caches: the downsampled viewer mask and both BMP stacks.
+    for stale in (os.path.join(base, "view_mask.nii.gz"),):
+        try:
+            if os.path.exists(stale):
+                os.remove(stale)
+        except OSError:
+            pass
+    import shutil
+    for mode in ("mask", "masked_image"):
+        d = _bmp_dir(r, mode)
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+
+    # Measurements made on the pre-crop mask no longer describe this run's mask.
+    note = (f"mask retro-cropped to {[z0, z1, y0, y1, x0, x1]} after this "
+            f"measurement — its numbers describe the pre-crop mask")
+    affected = 0
+    for m in r.measurements:
+        if m.status == "succeeded" and not m.archived:
+            m.flagged = True
+            m.notes = m.notes + chr(10) + note if m.notes else note
+            affected += 1
+
+    db.commit()
+    db.refresh(r)
+    return _out(r)
 
 
 # ---- live progress for an in-flight run -------------------------------------

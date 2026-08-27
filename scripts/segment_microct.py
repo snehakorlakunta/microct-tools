@@ -92,16 +92,39 @@ def find_slices(folder, pattern):
     return files
 
 
-def stack_to_nifti(folder, pattern, spacing, out_path):
+def clamp_crop(crop, Z, H, W):
+    """Sanitize a [z0,z1,y0,y1,x0,x1] crop box against the stack dimensions.
+    Returns a valid box or None when it collapses to nothing."""
+    z0, z1 = max(0, crop[0]), min(Z, crop[1])
+    y0, y1 = max(0, crop[2]), min(H, crop[3])
+    x0, x1 = max(0, crop[4]), min(W, crop[5])
+    if z0 >= z1 or y0 >= y1 or x0 >= x1:
+        return None
+    return (z0, z1, y0, y1, x0, x1)
+
+
+def stack_to_nifti(folder, pattern, spacing, out_path, crop=None):
     import numpy as np, SimpleITK as sitk
     from PIL import Image
     files = find_slices(folder, pattern)
+    Z_all = len(files)
+    H_all, W_all = np.array(Image.open(files[0]).convert("L")).shape
+    y0, y1, x0, x1 = 0, H_all, 0, W_all
+    if crop is not None:
+        box = clamp_crop(crop, Z_all, H_all, W_all)
+        if box is None:
+            sys.exit(f"--crop {list(crop)} collapses to an empty volume for a "
+                     f"({Z_all},{H_all},{W_all}) stack")
+        z0, z1, y0, y1, x0, x1 = box
+        files = files[z0:z1]
+        log(f"[convert] crop z[{z0}:{z1}] y[{y0}:{y1}] x[{x0}:{x1}] of "
+            f"({Z_all},{H_all},{W_all})")
     Z = len(files)
-    H, W = np.array(Image.open(files[0]).convert("L")).shape
+    H, W = y1 - y0, x1 - x0
     log(f"[convert] {Z} slices, {H}x{W} -> volume (Z,Y,X)=({Z},{H},{W})")
     vol = np.empty((Z, H, W), dtype=np.uint8)
     for i, f in enumerate(files):
-        vol[i] = np.array(Image.open(f).convert("L"))
+        vol[i] = np.array(Image.open(f).convert("L"))[y0:y1, x0:x1]
         if (i + 1) % 200 == 0:
             log(f"[convert] {i+1}/{Z}")
     img = sitk.GetImageFromArray(vol)
@@ -222,6 +245,10 @@ def main():
     ap.add_argument("--spacing", type=float, default=0.004, help="Voxel size in mm")
     ap.add_argument("--pattern", default="*rec*.bmp", help="Slice filename glob")
     ap.add_argument("--checkpoint", default="checkpoint_final.pth")
+    ap.add_argument("--crop", type=int, nargs=6, default=None,
+                    metavar=("Z0", "Z1", "Y0", "Y1", "X0", "X1"),
+                    help="Crop the stack to this half-open voxel box before "
+                         "inference (full-res coordinates)")
     args = ap.parse_args()
 
     case = args.case or os.path.basename(os.path.normpath(args.slices))
@@ -257,7 +284,7 @@ def main():
 
     # 1) convert
     _tc = time.time()
-    stack_to_nifti(args.slices, args.pattern, args.spacing, in_nii)
+    stack_to_nifti(args.slices, args.pattern, args.spacing, in_nii, crop=args.crop)
     conv_sec = time.time() - _tc
 
     # 2) predict
@@ -296,7 +323,10 @@ def main():
     bmp_dir = os.path.join(args.out, f"{case}_mask_bmp")
     bmp_count = 0
     try:
-        bmp_count, _ = write_mask_bmp(seg, find_slices(args.slices, args.pattern), bmp_dir)
+        name_files = find_slices(args.slices, args.pattern)
+        if args.crop is not None:  # names must mirror the CROPPED stack 1:1
+            name_files = name_files[max(0, args.crop[0]):args.crop[1]]
+        bmp_count, _ = write_mask_bmp(seg, name_files, bmp_dir)
         log(f"[bmp] wrote {bmp_count} per-slice mask BMPs -> {bmp_dir}")
     except Exception as e:  # noqa: BLE001 — BMP export must never fail the run
         log(f"[bmp] mask BMP export skipped: {e}")
@@ -327,6 +357,7 @@ def main():
     result = {"case": case, "device": dev, "roi_voxels": n,
               "roi_mm3": round(n * vox_mm3, 6), "roi_um3": round(n * vox_mm3 * 1e9, 1),
               "seg_shape": list(seg.shape), "best_slice": z,
+              "crop": list(args.crop) if args.crop else None,
               "mask_bmp_dir": bmp_dir, "mask_bmp_count": bmp_count,
               "predict_seconds": round(dt, 1), "folds": args.folds, "tta": args.tta,
               "low_vram": bool(args.low_vram), "mask_qc": mask_qc,

@@ -14,8 +14,9 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..database import get_db
 from ..models import Dataset, Model, Run
-from ..schemas import IngestRequest
-from ..registry import discover_models, ingest_root, resolve_nas
+from ..schemas import IngestRequest, SystemSettingsPatch
+from ..registry import (discover_models, get_app_setting, ingest_root, resolve_nas,
+                        set_app_setting)
 from ..sysinfo import compute_info
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -42,8 +43,15 @@ def stats(db: Session = Depends(get_db)):
 
 
 @router.get("/config")
-def config():
+def config(db: Session = Depends(get_db)):
     return {
+        # Runtime-adjustable settings (app_settings table overrides the .env
+        # default; the worker reads the same table, so changes apply live).
+        "parallel_gpu_runs": int(get_app_setting(
+            db, "parallel_gpu_runs", settings.parallel_gpu_runs) or 1),
+        "bvtv_threshold_hu": float(get_app_setting(
+            db, "bvtv_threshold_hu", settings.bvtv_threshold_hu) or 800.0),
+        "mu_water": settings.mu_water,
         "data_root": str(settings.data_root),
         "results_root": str(settings.results_root),
         "models_root": str(settings.models_root),
@@ -62,6 +70,28 @@ def config():
         "morph_mask_qc": settings.morph_mask_qc,
         "morph_allow_spacing_mismatch": settings.morph_allow_spacing_mismatch,
     }
+
+
+@router.patch("/system/settings")
+def patch_settings(body: SystemSettingsPatch, db: Session = Depends(get_db)):
+    """Persist runtime settings to the shared app_settings table.
+
+    parallel_gpu_runs is clamped to the GPUs actually present (a value of 3 on
+    a 2-GPU box would only queue-thrash); the worker re-clamps on its side too,
+    so a stale row can never over-commit."""
+    out = {}
+    if body.parallel_gpu_runs is not None:
+        gpus = compute_info().get("gpu_count", 0) or 0
+        v = max(1, min(int(body.parallel_gpu_runs), gpus if gpus >= 1 else 1))
+        set_app_setting(db, "parallel_gpu_runs", v)
+        out["parallel_gpu_runs"] = v
+    if body.bvtv_threshold_hu is not None:
+        v = float(body.bvtv_threshold_hu)
+        if not (0 < v < 10000):
+            raise HTTPException(400, "bvtv_threshold_hu out of range")
+        set_app_setting(db, "bvtv_threshold_hu", v)
+        out["bvtv_threshold_hu"] = v
+    return out
 
 
 @router.get("/system/compute")

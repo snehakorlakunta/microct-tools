@@ -17,6 +17,29 @@ def utcnow() -> dt.datetime:
 # Dataset modality types (the leaf "kind" of data). uCT is the historical default.
 DATASET_TYPES = ("uct", "scrna", "spatial", "omics", "other")
 
+# Categories WITHIN a modality. For uct: "digit" (terminal phalanx — the anatomy
+# digitpipe_v5 measures) vs "ho" (heterotopic ossification). Kept free-form in
+# the column so other modalities can grow their own subtypes without DDL.
+UCT_SUBTYPES = ("digit", "ho")
+
+# Digit identifiers for digit-uCT datasets: side (L/R) + digit number (2-4).
+DIGIT_IDS = ("L2", "L3", "L4", "R2", "R3", "R4")
+
+
+class AppSetting(Base):
+    """Tiny key/value store for settings changed at runtime from the UI.
+
+    Needed because the web server and the worker are separate processes: an
+    in-memory Settings override on the server would never reach the worker, but
+    both poll this table. Values are JSON so a setting can be a number, string
+    or object. Env vars remain the *defaults*; a row here overrides them.
+    """
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
 
 class Project(Base):
     """Top-level container. Groups one or more experiments (and their analyses)."""
@@ -24,6 +47,8 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), index=True)
+    # Who runs this project — free text, shown on the card, sortable/searchable.
+    project_lead: Mapped[Optional[str]] = mapped_column(String(200), index=True, nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -62,6 +87,11 @@ class DatasetSet(Base):
     experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id"), index=True)
     name: Mapped[str] = mapped_column(String(200), index=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Set-level details. Filled once per set, these autofill onto member
+    # datasets (which stay individually editable — see routers/projects.py
+    # propagation and Dataset.edited_fields).
+    organism: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    subtype: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
@@ -105,10 +135,34 @@ class Dataset(Base):
 
     # Modality + organism grouping for the browse taxonomy (uCT > Mouse > Set1 ...).
     type: Mapped[str] = mapped_column(String(32), default="uct", index=True)
+    # Category within the modality: for uct, "digit" | "ho". Gates which
+    # measurements make sense (digit length only for digit anatomy).
+    subtype: Mapped[Optional[str]] = mapped_column(String(32), index=True, nullable=True)
     organism: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
 
+    # Digit-uCT identity: which digit this scan is (L2..R4). Parsed from the
+    # dataset name at ingest (see registry.parse_digit_id), always editable.
+    digit_id: Mapped[Optional[str]] = mapped_column(String(8), index=True, nullable=True)
+    # Marks a normalization *reference* digit (an unamputated control). Driven by
+    # the checkbox in the analysis UI; persisted so the choice sticks.
+    unamputated: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Fields the user changed by hand (list of column names). Set-detail
+    # propagation in "unedited only" mode and re-ingest both skip fields listed
+    # here, so a manual correction is never silently overwritten.
+    edited_fields: Mapped[list] = mapped_column(JSON, default=list)
+
+    # Active 3D crop box in FULL-RES voxel coordinates [z0, z1, y0, y1, x0, x1]
+    # (half-open, numpy-style). Snapshotted into Run.params at enqueue time, so
+    # editing it later never changes what an existing run meant.
+    crop_box: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+
     # Placement in the Project > Experiment > Set hierarchy (all nullable: an
-    # ingested dataset starts unassigned and is organized later).
+    # ingested dataset starts unassigned and is organized later). project_id is
+    # stored directly — not only derived through the experiment — so a dataset
+    # can belong to a project before it has an experiment or set.
+    project_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("projects.id"), index=True, nullable=True)
     set_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("dataset_sets.id"), index=True, nullable=True)
     experiment_id: Mapped[Optional[int]] = mapped_column(
@@ -167,6 +221,11 @@ class Analysis(Base):
     dataset_ids: Mapped[list] = mapped_column(JSON, default=list)
     set_ids: Mapped[list] = mapped_column(JSON, default=list)
     run_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+    # Computed results stored WITH the record (e.g. the BV/TV normalization
+    # table), so a saved analysis renders without recomputing — and without
+    # needing files on the NAS.
+    data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     tags: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, index=True)

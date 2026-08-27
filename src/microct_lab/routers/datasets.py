@@ -13,14 +13,21 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
-from ..models import Dataset, DatasetSet, Experiment, Run
+from ..models import Dataset, DatasetSet, Experiment, Project, Run
 from ..registry import resolve_nas
-from ..schemas import DatasetDetail, DatasetOut, DatasetPatch
+from ..schemas import (DatasetBulkRequest, DatasetBulkResult, DatasetBulkRowResult,
+                       DatasetDetail, DatasetOut, DatasetPatch)
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
 SORTABLE = {"created_at", "name", "voxel_size_um", "slices", "scan_date", "study",
-            "size_bytes", "type", "organism"}
+            "size_bytes", "type", "subtype", "organism", "digit_id"}
+
+# Fields whose manual edits are remembered in Dataset.edited_fields, so that
+# set-detail propagation ("unedited only") and re-ingest never overwrite a value
+# a person typed. Hierarchy moves and QC flags are deliberately not tracked.
+TRACKED_EDITS = ("name", "type", "subtype", "organism", "digit_id",
+                 "unamputated", "study")
 
 
 def _run_counts(db: Session) -> dict:
@@ -36,7 +43,10 @@ def _out(d: Dataset, counts: dict) -> DatasetOut:
 @router.get("", response_model=list[DatasetOut])
 def list_datasets(q: Optional[str] = None, study: Optional[str] = None,
                   scanner: Optional[str] = None, type: Optional[str] = None,
+                  subtype: Optional[str] = None,
                   organism: Optional[str] = None, tag: Optional[str] = None,
+                  digit_id: Optional[str] = None,
+                  project_id: Optional[int] = None,
                   set_id: Optional[int] = None, experiment_id: Optional[int] = None,
                   unassigned: Optional[bool] = None, flagged: Optional[bool] = None,
                   include_archived: bool = False,
@@ -51,8 +61,14 @@ def list_datasets(q: Optional[str] = None, study: Optional[str] = None,
         stmt = stmt.where(Dataset.scanner == scanner)
     if type:
         stmt = stmt.where(Dataset.type == type)
+    if subtype:
+        stmt = stmt.where(Dataset.subtype == subtype)
     if organism:
         stmt = stmt.where(Dataset.organism == organism)
+    if digit_id:
+        stmt = stmt.where(Dataset.digit_id == digit_id)
+    if project_id is not None:
+        stmt = stmt.where(Dataset.project_id == project_id)
     if set_id is not None:
         stmt = stmt.where(Dataset.set_id == set_id)
     if experiment_id is not None:
@@ -85,7 +101,9 @@ def facets(db: Session = Depends(get_db)):
     return {"studies": sorted(distinct(Dataset.study)),
             "scanners": sorted(distinct(Dataset.scanner)),
             "types": sorted(distinct(Dataset.type)),
+            "subtypes": sorted(distinct(Dataset.subtype)),
             "organisms": sorted(distinct(Dataset.organism)),
+            "digit_ids": sorted(distinct(Dataset.digit_id)),
             "tags": sorted(tags)}
 
 
@@ -101,7 +119,8 @@ def taxonomy(db: Session = Depends(get_db)):
         tree.setdefault(t, {}).setdefault(org, []).append({
             "id": d.id, "name": d.name, "slices": d.slices,
             "voxel_size_um": d.voxel_size_um, "run_count": counts.get(d.id, 0),
-            "set_id": d.set_id, "tags": d.tags or []})
+            "set_id": d.set_id, "subtype": d.subtype, "digit_id": d.digit_id,
+            "tags": d.tags or []})
     return {"types": [{"type": t, "organisms": [{"organism": o, "datasets": ds}
                        for o, ds in sorted(orgs.items())]}
                       for t, orgs in sorted(tree.items())]}
@@ -162,40 +181,166 @@ def dataset_view_volume(dataset_id: int, db: Session = Depends(get_db)):
     return FileResponse(path, media_type="application/gzip", filename=os.path.basename(path))
 
 
-@router.patch("/{dataset_id}", response_model=DatasetOut)
-def patch_dataset(dataset_id: int, body: DatasetPatch, db: Session = Depends(get_db)):
-    d = db.get(Dataset, dataset_id)
-    if not d:
-        raise HTTPException(404, "dataset not found")
+def _mark_edited(d: Dataset, fields: list[str]) -> None:
+    """Record manual edits. Reassigns the list — SQLAlchemy does not track
+    in-place mutation of a plain JSON column."""
+    if fields:
+        d.edited_fields = sorted(set(list(d.edited_fields or []) + fields))
 
-    # Validate hierarchy moves and keep experiment_id consistent with the set.
+
+def _inherit_set_details(d: Dataset, s: DatasetSet) -> None:
+    """Autofill set details onto a newly assigned member — but never over a
+    field the user set by hand (see Dataset.edited_fields)."""
+    edited = set(d.edited_fields or [])
+    if s.organism and "organism" not in edited:
+        d.organism = s.organism
+    if s.subtype and "subtype" not in edited:
+        d.subtype = s.subtype
+
+
+def _apply_hierarchy(db: Session, d: Dataset, body) -> None:
+    """Membership moves with the consistency rules:
+    set ⇒ its experiment + project; experiment ⇒ its project (dropping a set
+    that belongs elsewhere); project alone touches nothing deeper unless the
+    current experiment contradicts it. Clears cascade downward only."""
     if body.set_id is not None:
         s = db.get(DatasetSet, body.set_id)
         if not s:
             raise HTTPException(404, "target set not found")
         d.set_id = s.id
         d.experiment_id = s.experiment_id
+        e = db.get(Experiment, s.experiment_id)
+        if e:
+            d.project_id = e.project_id
+        _inherit_set_details(d, s)
     if body.experiment_id is not None:
-        if not db.get(Experiment, body.experiment_id):
+        e = db.get(Experiment, body.experiment_id)
+        if not e:
             raise HTTPException(404, "target experiment not found")
-        d.experiment_id = body.experiment_id
+        d.experiment_id = e.id
+        d.project_id = e.project_id
+        if d.set_id:
+            s = db.get(DatasetSet, d.set_id)
+            if s and s.experiment_id != e.id:
+                d.set_id = None
+    if body.project_id is not None:
+        p = db.get(Project, body.project_id)
+        if not p:
+            raise HTTPException(404, "target project not found")
+        d.project_id = p.id
+        if d.experiment_id:
+            e = db.get(Experiment, d.experiment_id)
+            if e and e.project_id != p.id:
+                d.experiment_id = None
+                d.set_id = None
     if body.clear_set:
         d.set_id = None
     if body.clear_experiment:
         d.experiment_id = None
         d.set_id = None
+    if body.clear_project:
+        d.project_id = None
+        d.experiment_id = None
+        d.set_id = None
 
-    for field in ("name", "type", "organism", "tags", "notes", "flagged",
-                  "archived", "study"):
+
+def _apply_patch(db: Session, d: Dataset, body: DatasetPatch) -> None:
+    """Shared by single PATCH and the bulk endpoint."""
+    _apply_hierarchy(db, d, body)
+
+    edited: list[str] = []
+    for field in TRACKED_EDITS:
+        val = getattr(body, field)
+        if val is not None:
+            setattr(d, field, val)
+            edited.append(field)
+    for field in ("tags", "notes", "flagged", "archived"):
         val = getattr(body, field)
         if val is not None:
             setattr(d, field, val)
 
+    if body.crop_box is not None:
+        box = [int(v) for v in body.crop_box]
+        if len(box) != 6 or any(box[i] >= box[i + 1] for i in (0, 2, 4)) or min(box) < 0:
+            raise HTTPException(400, "crop_box must be [z0,z1,y0,y1,x0,x1] with "
+                                     "each min < max and all values >= 0")
+        d.crop_box = box
+    if body.clear_crop:
+        d.crop_box = None
+    if body.clear_digit_id:
+        d.digit_id = None
+        edited.append("digit_id")  # an explicit clear is an edit: re-ingest must not refill it
+    _mark_edited(d, edited)
+
+
+@router.patch("/{dataset_id}", response_model=DatasetOut)
+def patch_dataset(dataset_id: int, body: DatasetPatch, db: Session = Depends(get_db)):
+    d = db.get(Dataset, dataset_id)
+    if not d:
+        raise HTTPException(404, "dataset not found")
+    _apply_patch(db, d, body)
     db.commit()
     db.refresh(d)
     o = DatasetOut.model_validate(d)
     o.run_count = len(d.runs)
     return o
+
+
+@router.post("/bulk", response_model=DatasetBulkResult)
+def bulk_update(body: DatasetBulkRequest, db: Session = Depends(get_db)):
+    """Apply assignment / tag / rename changes to many datasets in one request.
+
+    Each dataset is settled independently — a bad row is reported, not allowed
+    to abandon the rest. Renames are final names computed by the client (its
+    regex preview IS the semantics); the server only applies them and refuses
+    collisions with any name that would exist after the batch."""
+    if not body.ids:
+        raise HTTPException(400, "ids is empty")
+
+    # Collision check across the post-batch namespace: names of untouched
+    # datasets + the proposed new names.
+    if body.renames:
+        taken = {n for (n,) in db.execute(select(Dataset.name).where(
+            Dataset.id.notin_(list(body.renames.keys())))).all()}
+        proposed = list(body.renames.values())
+        dupes = {n for n in proposed if proposed.count(n) > 1 or n in taken}
+        if any(not n.strip() for n in proposed):
+            raise HTTPException(400, "a rename produced an empty name")
+        if dupes:
+            raise HTTPException(409, f"rename collision: {sorted(dupes)[:5]}")
+
+    results: list[DatasetBulkRowResult] = []
+    for did in body.ids:
+        d = db.get(Dataset, did)
+        if not d:
+            results.append(DatasetBulkRowResult(id=did, ok=False, error="not found"))
+            continue
+        try:
+            patch = DatasetPatch(
+                project_id=body.project_id, experiment_id=body.experiment_id,
+                set_id=body.set_id, clear_project=body.clear_project or None,
+                clear_experiment=body.clear_experiment or None,
+                clear_set=body.clear_set or None,
+                name=body.renames.get(did))
+            _apply_patch(db, d, patch)
+            if body.renames.get(did):
+                _mark_edited(d, ["name"])
+            if body.add_tags or body.remove_tags:
+                tags = [t for t in (d.tags or []) if t not in body.remove_tags]
+                tags += [t for t in body.add_tags if t not in tags]
+                d.tags = tags
+            db.commit()
+            results.append(DatasetBulkRowResult(id=did, ok=True, name=d.name))
+        except HTTPException as e:
+            db.rollback()
+            results.append(DatasetBulkRowResult(id=did, ok=False, error=str(e.detail)))
+        except Exception as e:  # noqa: BLE001 — report, don't abort the batch
+            db.rollback()
+            results.append(DatasetBulkRowResult(id=did, ok=False,
+                                                error=f"{type(e).__name__}: {e}"))
+    ok = sum(1 for r in results if r.ok)
+    return DatasetBulkResult(attempted=len(results), succeeded=ok,
+                             failed=len(results) - ok, results=results)
 
 
 @router.delete("/{dataset_id}")

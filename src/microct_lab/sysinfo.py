@@ -89,11 +89,16 @@ def compute_info() -> dict:
     torch_view = _torch_cuda()
     # torch (in the worker env) is authoritative on usability; nvidia-smi gives specs.
     has_gpu = bool(gpus) or bool(torch_view.get("available"))
+    # With several GPUs, offer explicit per-GPU devices too (cuda:0, cuda:1 ...)
+    # so a run can be pinned; the worker maps cuda:N to CUDA_VISIBLE_DEVICES=N.
+    devices = ["auto", "cuda", "cpu"] if has_gpu else ["auto", "cpu"]
+    if len(gpus) > 1:
+        devices = ["auto", "cuda", *[f"cuda:{g['index']}" for g in gpus], "cpu"]
     return {
         **base,
         "gpus": gpus,
         "gpu_count": len(gpus),
         "torch": torch_view,
         "recommended_device": "cuda" if has_gpu else "cpu",
-        "devices": (["auto", "cuda", "cpu"] if has_gpu else ["auto", "cpu"]),
+        "devices": devices,
     }
