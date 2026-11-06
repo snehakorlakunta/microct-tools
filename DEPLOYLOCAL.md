@@ -210,6 +210,14 @@ morphometry. CPU only:
 pip install -e ".[morph]"
 ```
 
+Then set the bone threshold to **your lab's value** in `.env` (BV counts mask
+voxels at or above this grey value; the shipped 60 is only LeviDigit's README
+example):
+
+```ini
+MICROCT_LEVIDIGIT_BONE_THRESHOLD=<your lab's grey value, 0 to 255>
+```
+
 Then run `microct-measure-worker` in a third window so measurement jobs do not
 queue behind GPU work.
 

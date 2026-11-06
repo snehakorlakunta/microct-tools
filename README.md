@@ -73,11 +73,14 @@ supervise at scale.
 - **BV/TV & digit length (official: LeviDigit)** — on a succeeded run, queue a
   measurement that runs the vendored LeviDigit postprocessing
   (`scripts/levidigit_vendor/`, MIT): BV/TV with a fixed grey bone threshold
-  (0–255, inclusive, default 60) and digit length from the largest concavity to
+  (0–255, inclusive) and digit length from the largest concavity to
   the distal tip. Non-digit datasets get BV/TV only. The older in-app methods
   (interim threshold BV/TV, perios digitpipe morphometry) are kept and tagged
   **SK**; the API marks every measurement with `source_tag` / `official`, and
   stats and normalization use the official method only.
+  **Set `MICROCT_LEVIDIGIT_BONE_THRESHOLD` in `.env` to your lab's bone
+  threshold.** The shipped 60 is LeviDigit's README example, not a lab value,
+  and BV/TV depends directly on it.
 - **QC & failure modes** — on each result, set an outcome (pass / minor / fail),
   tag **failure modes** from a vocabulary (false-positive-outside, boundary
   leak, artifact confusion, …), add notes, and **flag for retraining**. The
