@@ -14,9 +14,10 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..database import get_db
 from ..models import Dataset, Model, Run
+from ..pipelines import OFFICIAL_PIPELINE
 from ..schemas import IngestRequest, SystemSettingsPatch
-from ..registry import (discover_models, get_app_setting, ingest_root, resolve_nas,
-                        set_app_setting)
+from ..registry import (discover_models, get_app_setting, ingest_root,
+                        levidigit_threshold_default, resolve_nas, set_app_setting)
 from ..sysinfo import compute_info
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -52,6 +53,9 @@ def config(db: Session = Depends(get_db)):
         "bvtv_threshold_hu": float(get_app_setting(
             db, "bvtv_threshold_hu", settings.bvtv_threshold_hu) or 800.0),
         "mu_water": settings.mu_water,
+        # The official measurement method and its runtime-adjustable threshold.
+        "official_pipeline": OFFICIAL_PIPELINE,
+        "levidigit_bone_threshold": levidigit_threshold_default(db),
         "data_root": str(settings.data_root),
         "results_root": str(settings.results_root),
         "models_root": str(settings.models_root),
@@ -91,6 +95,12 @@ def patch_settings(body: SystemSettingsPatch, db: Session = Depends(get_db)):
             raise HTTPException(400, "bvtv_threshold_hu out of range")
         set_app_setting(db, "bvtv_threshold_hu", v)
         out["bvtv_threshold_hu"] = v
+    if body.levidigit_bone_threshold is not None:
+        v = float(body.levidigit_bone_threshold)
+        if not (0 <= v <= 255):
+            raise HTTPException(400, "levidigit_bone_threshold must be 0..255")
+        set_app_setting(db, "levidigit_bone_threshold", v)
+        out["levidigit_bone_threshold"] = v
     return out
 
 

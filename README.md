@@ -70,6 +70,14 @@ supervise at scale.
   runs open a **linked comparison viewer**: side-by-side live panes under one shared
   toolbar with **synced** crosshair/scrub, so `v1` vs `v2` are always at the same
   location. Raw datasets can also be visualized on their own, before any run.
+- **BV/TV & digit length (official: LeviDigit)** — on a succeeded run, queue a
+  measurement that runs the vendored LeviDigit postprocessing
+  (`scripts/levidigit_vendor/`, MIT): BV/TV with a fixed grey bone threshold
+  (0–255, inclusive, default 60) and digit length from the largest concavity to
+  the distal tip. Non-digit datasets get BV/TV only. The older in-app methods
+  (interim threshold BV/TV, perios digitpipe morphometry) are kept and tagged
+  **SK**; the API marks every measurement with `source_tag` / `official`, and
+  stats and normalization use the official method only.
 - **QC & failure modes** — on each result, set an outcome (pass / minor / fail),
   tag **failure modes** from a vocabulary (false-positive-outside, boundary
   leak, artifact confusion, …), add notes, and **flag for retraining**. The
@@ -180,6 +188,9 @@ microct-seg-lab/
 ├── Dockerfile / docker-compose.yml
 ├── scripts/                  # all runnable scripts, checked in
 │   ├── segment_microct.py    # the GPU-ready segmentation pipeline (portable)
+│   ├── measure_levidigit.py  # OFFICIAL BV/TV + digit length (drives levidigit_vendor/)
+│   ├── levidigit_vendor/     # vendored LeviDigit (MIT) — see PROVENANCE.md there
+│   ├── measure_bvtv.py / measure_morphometry.py   # SK methods (kept)
 │   ├── bmp_stack_to_nifti.py # stack converter
 │   ├── serve.py / run_worker.py / ingest_datasets.py / register_model.py
 └── src/microct_lab/          # the installable package

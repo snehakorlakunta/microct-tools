@@ -33,8 +33,10 @@ seg = ["nnunetv2>=2.2", "torch>=2.0", "natsort>=8"]
 # scripts/perios/digitpipe_v5/utils.py imports sklearn.decomposition.PCA at module
 # level, so every stage fails at import without it. trimesh is not imported by any
 # vendored file today; it is kept for the mesh work that pipeline is heading toward.
+# The same extra covers the OFFICIAL LeviDigit measurement (scripts/levidigit_vendor/):
+# it needs nibabel, scipy and scikit-image, plus matplotlib for its figures.
 morph = ["nibabel>=5.0", "scipy>=1.10", "scikit-image>=0.20", "scikit-learn>=1.3",
-         "trimesh>=4.0", "pandas>=2.0", "openpyxl>=3.1"]
+         "trimesh>=4.0", "pandas>=2.0", "openpyxl>=3.1", "matplotlib>=3.8"]
 dev = ["pytest>=8", "httpx>=0.27"]
 
 [project.scripts]

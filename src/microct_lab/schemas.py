@@ -168,12 +168,21 @@ class MeasurementOut(BaseModel):
     # Computed by the router (NOT stored) — see RunOut.stuck. Offers the UI a cue
     # for POST /api/measurements/{id}/cancel?force=true.
     stuck: bool = False
+    # Derived from pipeline_version (NOT stored) — see pipelines.py. "LeviDigit"
+    # for the official method, "SK" for the older in-app methods.
+    source_tag: str = "SK"
+    official: bool = False
 
 
 class MeasurementCreate(BaseModel):
     run_ids: list[int]
-    pipeline_version: str = "digitpipe_v5"
+    # The official method. The SK methods ("bvtv_thresh_v1", "digitpipe_v5")
+    # still run when asked for by name.
+    pipeline_version: str = "levidigit_v1"
     skip_viz: bool = False
+    # levidigit only: inclusive bone threshold on the 0..255 grey scale.
+    # Absent = the runtime default (app setting, then .env, then 60).
+    bone_threshold: Optional[float] = None
     # bvtv_thresh only: the bone threshold in Hounsfield units, converted
     # per-scan to a grey value from the scan's own _rec.log reconstruction
     # window (see bvtv.py). Ignored by digitpipe.
@@ -454,5 +463,7 @@ class RunCropRequest(BaseModel):
 class SystemSettingsPatch(BaseModel):
     # How many segmentation runs the worker may execute at once (1..gpu_count).
     parallel_gpu_runs: Optional[int] = None
-    # Bone threshold default for the interim BV/TV measurement, in HU.
+    # Bone threshold default for the interim (SK) BV/TV measurement, in HU.
     bvtv_threshold_hu: Optional[float] = None
+    # Bone threshold default for the official LeviDigit measurement, grey 0..255.
+    levidigit_bone_threshold: Optional[float] = None

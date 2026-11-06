@@ -299,7 +299,16 @@ flowchart TD
 - **Parallel worker**: up to `parallel_gpu_runs` segmentation subprocesses at
   once, each pinned via `CUDA_VISIBLE_DEVICES` (slot -> GPU); measurements run
   in their own thread. Limit re-read every loop, clamped to detected GPUs.
-- **Interim BV/TV**: `Measurement` rows with `pipeline_version=bvtv_thresh_v1`
+- **Official BV/TV + digit length (LeviDigit)**: `Measurement` rows with
+  `pipeline_version=levidigit_v1` are executed by `scripts/measure_levidigit.py`,
+  which runs the vendored LeviDigit code (`scripts/levidigit_vendor/`). Results
+  live in `Measurement.metrics` (`bv_tv_percent`, `bv_tv` fraction, `bv_mm3`,
+  `tv_mm3`, `digit_length_mm`/`_um`, `digit_length_status`, landmarks, and
+  `files` for the CSV and figure); no new columns, so no migration. The bone
+  threshold (grey 0..255) and `bvtv_only` (non-digit datasets) are frozen into
+  `Measurement.params`. Tags are derived, not stored: `pipelines.source_tag()`
+  gives "LeviDigit" for this method and "SK" for the two below.
+- **Interim BV/TV (SK)**: `Measurement` rows with `pipeline_version=bvtv_thresh_v1`
   are executed by `scripts/measure_bvtv.py` (threshold within the mask). The
   HU threshold is converted per scan through the `_rec.log` CS window
   (`bvtv.py`); the whole conversion is frozen into `Measurement.params`.

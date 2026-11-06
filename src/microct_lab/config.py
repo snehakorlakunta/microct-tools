@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # pipeline uses. Re-pin against a CTAn export when one is available.
     mu_water: float = 0.0222
 
+    # --- Official BV/TV + digit length: LeviDigit (scripts/measure_levidigit.py) --
+    # Inclusive bone threshold on the 0..255 grey scale. LeviDigit uses a FIXED
+    # grey threshold (no HU conversion) and requires the user to choose it; 60 is
+    # the value in its README. This is only the .env default — the UI can
+    # override it at runtime (app_settings key "levidigit_bone_threshold") and per
+    # request, and every measurement freezes the value it used into its params.
+    levidigit_bone_threshold: float = 60.0
+
     # How long a job may sit in "canceling" before the API reports it as stuck.
     # A cancel is a two-step handshake: the API flips the row to "canceling" and
     # the WORKER kills the subprocess and writes the terminal status. If no worker

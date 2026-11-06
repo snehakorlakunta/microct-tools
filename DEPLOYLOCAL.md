@@ -203,7 +203,8 @@ pip install torch --index-url https://download.pytorch.org/whl/cu121
 pip install -e ".[seg]"
 ```
 
-**Morphometry** — bone length and socket measurement, CPU only:
+**BV/TV and digit length** (LeviDigit, the official method) and the older SK
+morphometry. CPU only:
 
 ```
 pip install -e ".[morph]"

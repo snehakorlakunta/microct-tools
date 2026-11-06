@@ -8,9 +8,11 @@ Two job kinds share this loop:
     so the UI can raise it without a worker restart; it is clamped to the
     number of GPUs actually present.
   * measurement  — a queued Measurement, executed via
-    scripts/measure_morphometry.py (digitpipe) or scripts/measure_bvtv.py
-    (interim threshold BV/TV). One at a time, in its own thread, so a long
-    morphometry never blocks segmentation claims.
+    scripts/measure_levidigit.py (LeviDigit — the OFFICIAL BV/TV and digit
+    length), or one of the SK methods: scripts/measure_morphometry.py
+    (digitpipe) or scripts/measure_bvtv.py (interim threshold BV/TV). One at a
+    time, in its own thread, so a long morphometry never blocks segmentation
+    claims.
 
 Cross-platform (Windows/Linux), no Redis/broker. Run alongside the web server:
     microct-worker                      # both kinds (default)
@@ -32,6 +34,7 @@ from sqlalchemy import select
 from .config import DEFAULT_SCRIPTS_DIR, settings
 from .database import SessionLocal, init_db
 from .models import Dataset, Measurement, Model, Run
+from .pipelines import is_levidigit, is_sk_bvtv
 from .registry import get_app_setting, spacing_um_for
 from .sysinfo import _nvidia_gpus, host_info
 
@@ -40,6 +43,7 @@ from .sysinfo import _nvidia_gpus, host_info
 MEASURE_SCRIPT = Path(getattr(settings, "measure_script",
                               DEFAULT_SCRIPTS_DIR / "measure_morphometry.py"))
 BVTV_SCRIPT = DEFAULT_SCRIPTS_DIR / "measure_bvtv.py"
+LEVIDIGIT_SCRIPT = DEFAULT_SCRIPTS_DIR / "measure_levidigit.py"
 
 
 def _claim_next(db) -> Run | None:
@@ -240,8 +244,9 @@ def _execute_measurement(db, m: Measurement) -> None:
     case = p.get("case") or _case_from_run(run)
     mask = p.get("mask_nii") or run.mask_nii
     image = p.get("input_nii") or run.input_nii
-    is_bvtv = str(m.pipeline_version or "").startswith("bvtv")
-    driver = BVTV_SCRIPT if is_bvtv else MEASURE_SCRIPT
+    is_bvtv = is_sk_bvtv(m.pipeline_version)
+    is_ld = is_levidigit(m.pipeline_version)
+    driver = LEVIDIGIT_SCRIPT if is_ld else BVTV_SCRIPT if is_bvtv else MEASURE_SCRIPT
     if not mask or not os.path.exists(mask):
         _finish(db, m, "failed", f"mask not found: {mask}")
         return
@@ -264,7 +269,23 @@ def _execute_measurement(db, m: Measurement) -> None:
     # Fall back to the RUN's own spacing, never the dataset's current value — see
     # registry.spacing_um_for for why the two can legitimately disagree.
     spacing_um = p.get("spacing_um") or spacing_um_for(run, db.get(Dataset, m.dataset_id))
-    if is_bvtv:
+    if is_ld:
+        # Official LeviDigit BV/TV + digit length. Threshold frozen at enqueue.
+        cmd = [
+            settings.python, str(LEVIDIGIT_SCRIPT),
+            "--mask", str(mask),
+            "--image", str(image),
+            "--case", str(case),
+            "--out", str(out),
+            "--pipeline", str(m.pipeline_version),
+            "--spacing-um", str(spacing_um),
+            "--bone-threshold", str(p.get("bone_threshold", settings.levidigit_bone_threshold)),
+        ]
+        if p.get("skip_viz"):
+            cmd.append("--skip-viz")
+        if p.get("bvtv_only"):
+            cmd.append("--bvtv-only")
+    elif is_bvtv:
         # Interim threshold BV/TV: cheap voxel counting, no digitpipe, no mask
         # QC (nothing here depends on the mask being one clean component).
         cmd = [
@@ -306,6 +327,12 @@ def _execute_measurement(db, m: Measurement) -> None:
     if returncode == 0 and result_json.exists():
         r = json.loads(result_json.read_text(encoding="utf-8"))
         metrics = r.get("metrics") or {}
+        if is_ld:
+            # Output files the API serves (containment-checked against
+            # output_dir in routers/measurements._serve).
+            metrics = dict(metrics)
+            metrics["files"] = {k: r.get(k) for k in ("csv_path", "figure_png")}
+            metrics["files"]["csv"] = metrics["files"].pop("csv_path")
         m.metrics = metrics
         for col in ("socket_volume_voxels", "socket_volume_mm3", "socket_radius_voxels",
                     "socket_radius_mm", "phalanx_volume_voxels", "phalanx_volume_mm3",

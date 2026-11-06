@@ -34,6 +34,14 @@ def get_app_setting(db: Session, key: str, default=None):
     return (row.value or {}).get("v", default)
 
 
+def levidigit_threshold_default(db: Session) -> float:
+    """Runtime default bone threshold (grey 0..255) for the official LeviDigit
+    measurement: the UI-set app setting, else MICROCT_LEVIDIGIT_BONE_THRESHOLD.
+    Explicit None check, not `or`, because 0 is a legal threshold."""
+    v = get_app_setting(db, "levidigit_bone_threshold", None)
+    return float(v) if v is not None else float(settings.levidigit_bone_threshold)
+
+
 def set_app_setting(db: Session, key: str, value) -> None:
     row = db.get(AppSetting, key)
     if row is None:

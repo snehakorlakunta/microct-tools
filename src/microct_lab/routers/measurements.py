@@ -1,5 +1,11 @@
-"""Measurement endpoints: enqueue morphometry, list/filter, detail, cancel, stats,
-and file serving (7-class annotated volume for NiiVue + the pipeline spreadsheet)."""
+"""Measurement endpoints: enqueue, list/filter, detail, cancel, stats, and file
+serving (annotated label volume for NiiVue, spreadsheets, figures).
+
+The OFFICIAL method is LeviDigit (pipeline_version "levidigit_v1"): BV/TV and
+digit length. The older in-app methods — interim threshold BV/TV
+("bvtv_thresh_v1") and perios morphometry ("digitpipe_v5") — still run and are
+tagged "SK". See pipelines.py. List endpoints take `source=official|sk|all`;
+stats default to the official method only."""
 from __future__ import annotations
 
 import os
@@ -15,8 +21,10 @@ from ..bvtv import resolve_threshold
 from ..config import settings
 from ..database import get_db
 from ..models import Dataset, Measurement, Run
+from ..pipelines import (OFFICIAL_PIPELINE, SOURCES, is_levidigit, is_official,
+                         is_sk_bvtv, source_tag)
 from ..registry import (_safe, force_cancel, get_app_setting, job_is_stuck,
-                        spacing_um_for)
+                        levidigit_threshold_default, spacing_um_for)
 from ..schemas import MeasurementCreate, MeasurementOut, MeasurementPatch
 from ..stats import describe
 
@@ -24,8 +32,9 @@ router = APIRouter(prefix="/api/measurements", tags=["measurements"])
 
 XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-# Numeric metric columns aggregated by GET /stats. Everything else the pipeline
-# emits stays in the JSON `metrics` blob; these are the promoted headline columns.
+# Numeric metric columns aggregated by GET /stats?source=sk (the SK digitpipe
+# morphometry). Everything else the pipeline emits stays in the JSON `metrics`
+# blob; these are the promoted headline columns.
 METRIC_COLUMNS = [
     "socket_volume_voxels", "socket_volume_mm3",
     "socket_radius_voxels", "socket_radius_mm",
@@ -33,6 +42,15 @@ METRIC_COLUMNS = [
     "bone_length_voxels", "bone_length_mm",
     "euclidean_distance_voxels", "euclidean_distance_mm",
 ]
+
+# Keys aggregated by GET /stats for the official LeviDigit method. Read from the
+# `metrics` blob (no promoted columns, so no schema migration was needed).
+LEVIDIGIT_METRIC_KEYS = [
+    "bv_tv_percent", "bv_mm3", "tv_mm3",
+    "digit_length_mm", "digit_length_um",
+]
+
+CSV_MEDIA = "text/csv"
 
 
 def _out(m: Measurement) -> MeasurementOut:
@@ -43,7 +61,31 @@ def _out(m: Measurement) -> MeasurementOut:
     o.dataset_name = ds.name if ds else None
     # Derived per request from the clock, never stored — see registry.job_is_stuck.
     o.stuck = job_is_stuck(m)
+    o.source_tag = source_tag(m.pipeline_version)
+    o.official = is_official(m.pipeline_version)
     return o
+
+
+def _source_filter(stmt, source: Optional[str]):
+    """Restrict a Measurement select to one source (see pipelines.SOURCES)."""
+    if source in (None, "", "all"):
+        return stmt
+    if source not in SOURCES:
+        raise HTTPException(400, f"source must be one of {', '.join(SOURCES)}")
+    official = Measurement.pipeline_version.like("levidigit%")
+    return stmt.where(official) if source == "official" else stmt.where(~official)
+
+
+def _is_digit_dataset(ds: Optional[Dataset]) -> bool:
+    """Same notion of 'digit' as the anatomy gate: category uct digit, or a
+    legacy anatomy tag."""
+    if ds is None:
+        return False
+    if (ds.type or "uct") == "uct" and ds.subtype == "digit":
+        return True
+    wanted = set(settings.morph_anatomy_tag_list)
+    have = {str(t).strip().lower() for t in (ds.tags or [])}
+    return bool(wanted and (have & wanted))
 
 
 def _anatomy_block_reason(run: Run) -> Optional[str]:
@@ -97,8 +139,11 @@ def _case_from_run(run: Run) -> str:
 @router.get("", response_model=list[MeasurementOut])
 def list_measurements(run_id: Optional[int] = None, dataset_id: Optional[int] = None,
                       status: Optional[str] = None, include_archived: bool = False,
+                      source: Optional[str] = None,
                       db: Session = Depends(get_db)):
-    stmt = select(Measurement)
+    """`source` = official (LeviDigit) | sk | all. Omitted = all, so older
+    clients keep seeing every row."""
+    stmt = _source_filter(select(Measurement), source)
     if run_id:
         stmt = stmt.where(Measurement.run_id == run_id)
     if dataset_id:
@@ -130,15 +175,34 @@ def bvtv_threshold(dataset_id: int, hu: Optional[float] = None,
 
 # Declared BEFORE /{measurement_id} so "stats" isn't swallowed by the int path param.
 @router.get("/stats")
-def measurement_stats(dataset_id: Optional[int] = None, db: Session = Depends(get_db)):
-    """mean / sd / min / max / n over the succeeded measurements' metric columns."""
+def measurement_stats(dataset_id: Optional[int] = None, source: str = "official",
+                      db: Session = Depends(get_db)):
+    """mean / sd / min / max / n over succeeded, non-archived measurements.
+
+    source=official (default): LeviDigit BV/TV and digit length, read from each
+    row's metrics. source=sk: the SK digitpipe morphometry columns. The two are
+    never pooled — they are different methods."""
+    if source not in ("official", "sk"):
+        raise HTTPException(400, "source must be official | sk")
     stmt = select(Measurement).where(Measurement.status == "succeeded",
                                      Measurement.archived == False)  # noqa: E712
+    stmt = _source_filter(stmt, source)
     if dataset_id:
         stmt = stmt.where(Measurement.dataset_id == dataset_id)
     rows = db.scalars(stmt).all()
-    metrics = {col: describe([getattr(m, col) for m in rows]) for col in METRIC_COLUMNS}
-    return {"dataset_id": dataset_id, "measurements": len(rows), "metrics": metrics}
+    if source == "official":
+        def val(m, key):
+            v = (m.metrics or {}).get(key)
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        metrics = {k: describe([val(m, k) for m in rows]) for k in LEVIDIGIT_METRIC_KEYS}
+        columns = LEVIDIGIT_METRIC_KEYS
+    else:
+        # Interim BV/TV rows carry none of these columns; only digitpipe counts.
+        rows = [m for m in rows if not is_sk_bvtv(m.pipeline_version)]
+        metrics = {col: describe([getattr(m, col) for m in rows]) for col in METRIC_COLUMNS}
+        columns = METRIC_COLUMNS
+    return {"dataset_id": dataset_id, "source": source, "columns": columns,
+            "measurements": len(rows), "metrics": metrics}
 
 
 @router.post("", response_model=list[MeasurementOut])
@@ -157,7 +221,19 @@ def create_measurements(body: MeasurementCreate, db: Session = Depends(get_db)):
 
     # The interim threshold BV/TV works on ANY uct segmentation (digit and ho
     # alike) — the anatomy gate protects only the digit-specific pipeline.
-    is_bvtv = body.pipeline_version.startswith("bvtv")
+    is_bvtv = is_sk_bvtv(body.pipeline_version)
+    # LeviDigit is not gated either: its BV/TV is defined for any segmentation,
+    # and on a non-digit dataset it runs BV/TV only (no digit length) — see the
+    # per-run `bvtv_only` below.
+    is_ld = is_levidigit(body.pipeline_version)
+    if is_ld and body.pipeline_version != OFFICIAL_PIPELINE:
+        raise HTTPException(400, f"unknown LeviDigit pipeline {body.pipeline_version!r} "
+                                 f"(expected {OFFICIAL_PIPELINE!r})")
+    if is_ld:
+        threshold = (float(body.bone_threshold) if body.bone_threshold is not None
+                     else levidigit_threshold_default(db))
+        if not 0.0 <= threshold <= 255.0:
+            raise HTTPException(400, f"bone_threshold must be 0..255 (got {threshold:g})")
 
     runs: list[Run] = []
     for rid in body.run_ids:
@@ -173,7 +249,7 @@ def create_measurements(body: MeasurementCreate, db: Session = Depends(get_db)):
         if not run.input_nii or not os.path.isfile(run.input_nii):
             raise HTTPException(400, f"run {rid} has no input volume on disk "
                                      f"({run.input_nii or 'input_nii unset'})")
-        if not is_bvtv:
+        if not (is_bvtv or is_ld):
             blocked = _anatomy_block_reason(run)
             if blocked:
                 raise HTTPException(400, blocked)
@@ -194,12 +270,19 @@ def create_measurements(body: MeasurementCreate, db: Session = Depends(get_db)):
             hu = body.threshold_hu if body.threshold_hu is not None else \
                 get_app_setting(db, "bvtv_threshold_hu", settings.bvtv_threshold_hu)
             params.update(resolve_threshold(ds.log if ds else None, hu))
+        if is_ld:
+            # Frozen per measurement so the number stays auditable after the
+            # default changes. Digit length only where the dataset IS a digit.
+            digit = _is_digit_dataset(ds)
+            params.update({"bone_threshold": threshold, "bvtv_only": not digit,
+                           "bvtv_only_reason": None if digit else
+                           "dataset is not categorized as uct digit — BV/TV only"})
         m = Measurement(run_id=run.id, dataset_id=run.dataset_id, status="queued",
                         pipeline_version=body.pipeline_version, params=params)
         db.add(m)
         db.flush()  # get m.id
         # Same convention as registry.enqueue_runs: <results_root>/<case>__<what>__<id>
-        what = "bvtv" if is_bvtv else "morph"
+        what = "levidigit" if is_ld else "bvtv" if is_bvtv else "morph"
         m.output_dir = str(Path(settings.results_root) /
                            f"{_safe(params['case'])}__{what}__m{m.id}")
         made.append(m)
@@ -340,8 +423,13 @@ def _serve(m: Optional[Measurement], path: Optional[str], media: str):
 
 @router.get("/{measurement_id}/annotated.nii.gz")
 def measurement_annotated(measurement_id: int, db: Session = Depends(get_db)):
-    """The 7-class annotated label volume (1 bone, 2 socket, 3 line outside bone,
-    4 line inside bone, 5 furthest point, 6 socket COM, 7 first intersection)."""
+    """The annotated label volume for the viewer.
+
+    LeviDigit (official): its audit labelmap — 1 TV below threshold, 2 BV,
+    3 digit length counted, 4 largest concavity, 5 concavity centroid,
+    6 distal endpoint.
+    digitpipe (SK): 1 bone, 2 socket, 3 line outside bone, 4 line inside bone,
+    5 furthest point, 6 socket COM, 7 first intersection."""
     m = db.get(Measurement, measurement_id)
     return _serve(m, m.annotated_nii if m else None, "application/gzip")
 
@@ -350,3 +438,22 @@ def measurement_annotated(measurement_id: int, db: Session = Depends(get_db)):
 def measurement_xlsx(measurement_id: int, db: Session = Depends(get_db)):
     m = db.get(Measurement, measurement_id)
     return _serve(m, m.xlsx_path if m else None, XLSX_MEDIA)
+
+
+def _file(m: Optional[Measurement], key: str) -> Optional[str]:
+    files = (m.metrics or {}).get("files") if m else None
+    return files.get(key) if isinstance(files, dict) else None
+
+
+@router.get("/{measurement_id}/export.csv")
+def measurement_csv(measurement_id: int, db: Session = Depends(get_db)):
+    """LeviDigit's measurements.csv for this measurement (official method only)."""
+    m = db.get(Measurement, measurement_id)
+    return _serve(m, _file(m, "csv"), CSV_MEDIA)
+
+
+@router.get("/{measurement_id}/figure.png")
+def measurement_figure(measurement_id: int, db: Session = Depends(get_db)):
+    """LeviDigit's publication figure (absent when queued with skip_viz)."""
+    m = db.get(Measurement, measurement_id)
+    return _serve(m, _file(m, "figure_png"), "image/png")

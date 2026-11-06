@@ -25,8 +25,14 @@ CODE_EXTS = {".r", ".rmd", ".py", ".ipynb", ".sh", ".txt", ".md", ".csv", ".tsv"
 
 # ------------------------------------------------------- BV/TV normalization
 def _bvtv_for(db: Session, dataset_ids: list[int]) -> dict[int, dict]:
-    """Latest usable BV/TV per dataset: prefers the interim threshold
-    measurement (metrics.bv_tv), falls back to digitpipe's BV_TV_primary."""
+    """Latest OFFICIAL BV/TV per dataset: the newest succeeded LeviDigit
+    measurement's metrics.bv_tv (a 0..1 fraction).
+
+    The SK methods (interim threshold BV/TV, digitpipe's BV_TV_primary) are
+    deliberately NOT used as a fallback: they are different methods with a
+    different threshold, and silently mixing them into one normalized table
+    would compare unlike numbers. A dataset with only SK values reports "no
+    BV/TV" and says which measurement to run."""
     out: dict[int, dict] = {}
     if not dataset_ids:
         return out
@@ -34,18 +40,15 @@ def _bvtv_for(db: Session, dataset_ids: list[int]) -> dict[int, dict]:
         select(Measurement)
         .where(Measurement.dataset_id.in_(dataset_ids),
                Measurement.status == "succeeded",
-               Measurement.archived == False)  # noqa: E712
+               Measurement.archived == False,  # noqa: E712
+               Measurement.pipeline_version.like("levidigit%"))
         .order_by(Measurement.created_at.desc())).all()
     for m in rows:
         if m.dataset_id in out:
             continue
-        metrics = m.metrics or {}
-        v = metrics.get("bv_tv")
-        source = "bvtv_thresh"
-        if not isinstance(v, (int, float)):
-            v = metrics.get("bv_tv_primary")
-            source = "digitpipe"
-        if isinstance(v, (int, float)):
+        v = (m.metrics or {}).get("bv_tv")
+        source = "levidigit"
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
             out[m.dataset_id] = {"value": float(v), "source": source,
                                  "measurement_id": m.id}
     return out
@@ -137,7 +140,7 @@ def normalize_bvtv(body: NormalizeBvtvRequest, db: Session = Depends(get_db)):
                "measurement_id": got["measurement_id"] if got else None,
                "reference": None, "normalized": None, "note": None}
         if not got:
-            row["note"] = "no BV/TV measurement — run BV/TV (threshold) first"
+            row["note"] = "no LeviDigit BV/TV — run the LeviDigit measurement first"
             rows.append(row)
             continue
         if body.mode == "per_leg":
