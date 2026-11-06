@@ -196,7 +196,8 @@ app.include_router(analyses.router)
 app.include_router(measurements.router)
 
 # Serve the frontend at "/" (registered last so /api/* routes win). This is the
-# bundled SPA unless MICROCT_WEB_DIR points at another build — e.g. the Next.js
-# static export, which then runs same-origin: no CORS, no Private Network Access
-# preflight, no dependency on a hosted deployment being reachable.
+# bundled copy of the current interface (src/microct_lab/site/, the microctweb
+# static export) unless MICROCT_WEB_DIR points at another build. It runs
+# same-origin: no CORS, no Private Network Access preflight, no dependency on a
+# hosted deployment being reachable, and it detects its own address at startup.
 app.mount("/", StaticFiles(directory=str(settings.frontend_dir), html=True), name="web")

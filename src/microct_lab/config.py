@@ -11,6 +11,10 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent.parent          # src/microct_lab -> src -> <repo>
 DEFAULT_SCRIPTS_DIR = REPO_ROOT / "scripts"
 WEB_DIR = PACKAGE_DIR / "web"
+# The current interface (the microctweb static export), bundled by
+# `npm run bundle:server` in microctweb. Served at "/" by default; WEB_DIR is
+# the older built-in interface, kept only as a fallback if this is missing.
+SITE_DIR = PACKAGE_DIR / "site"
 # Absolute path so the .env is found no matter what the process CWD is (uvicorn,
 # the worker, tests, or a service manager may launch from anywhere).
 ENV_FILE = REPO_ROOT / ".env"
@@ -163,6 +167,8 @@ class Settings(BaseSettings):
         configured one does not exist, so a stale path cannot take the UI down."""
         if self.web_dir and Path(self.web_dir).is_dir():
             return Path(self.web_dir)
+        if (SITE_DIR / "index.html").is_file():
+            return SITE_DIR
         return WEB_DIR
 
     @property

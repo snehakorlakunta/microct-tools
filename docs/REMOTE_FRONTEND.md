@@ -59,7 +59,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 Once set, the hosted UI must send `Authorization: Bearer <token>` on every
 request; paste it into its Connection panel. **Pages served from this machine
-stay exempt**, so the built-in dashboard at `http://127.0.0.1:8000` keeps working
+stay exempt**, so the site the server hosts at `http://127.0.0.1:8000` keeps working
 with no configuration. Set `MICROCT_REQUIRE_TOKEN_LOCAL=true` to demand it from
 everyone, including localhost.
 

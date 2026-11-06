@@ -96,7 +96,8 @@ FastAPI (API + serves the SPA)
   ├─ SQLite registry  (Models / Datasets / Runs)         <- one file, in STATE_DIR
   ├─ DB-backed job queue  ->  worker process             <- cross-platform, no Redis
   │      worker runs  scripts/segment_microct.py  on the GPU/CPU
-  └─ web/  SPA  +  vendored NiiVue viewer (embedded)
+  └─ site/  the current interface (microctweb build), served at "/"
+     web/   older built-in SPA, used only if site/ is missing
 
 External storage (configured in .env, NOT in the repo):
   DATA_ROOT   datasets (folders of *_rec*.bmp + *_rec.log)
@@ -201,7 +202,8 @@ microct-seg-lab/
     ├── logparse.py  modelmeta.py  registry.py  worker.py  cli.py
     ├── bmp_export.py          # mask → per-slice BMP stack
     ├── routers/   (system, models, datasets, runs)
-    └── web/       index.html  styles.css  app.js  vendor/niivue.js
+    ├── site/      the bundled microctweb build served at "/" (npm run bundle:server)
+    └── web/       older built-in SPA, fallback only
 ```
 
 Data lives outside; `.gitignore` keeps `*.nii.gz`, `*.bmp`, `*.pth`, `*.db`,

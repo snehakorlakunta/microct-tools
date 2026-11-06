@@ -57,4 +57,4 @@ pythonpath = ["src"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-microct_lab = ["web/*", "web/**/*"]
+microct_lab = ["web/*", "web/**/*", "site/*", "site/**/*"]

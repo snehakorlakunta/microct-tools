@@ -259,29 +259,25 @@ Use this if you are on **Safari** (which refuses to let a hosted HTTPS page reac
 your own machine), if you have no internet, or if you would simply rather not
 depend on a hosted site.
 
-The server already includes a working built-in interface — just open
-<http://127.0.0.1:8000> instead of the Vercel address. You can skip
-`MICROCT_ALLOWED_ORIGINS` entirely in that case.
+The server hosts the current interface itself (a copy of the hosted site,
+bundled in `src/microct_lab/site/`). Just open <http://127.0.0.1:8000> instead
+of the Vercel address. Because the page and the server are the same address,
+none of the browser's cross-origin rules apply, and you can skip
+`MICROCT_ALLOWED_ORIGINS` entirely.
 
-For the newer interface locally you need the frontend repository as well
-(`snehakorlakunta/microctweb`, also private), Node.js 20+, and:
+If a run's address looks like `…/#/run/6` rather than `…/runs?id=6`, you are on
+the old built-in interface, which has no BV/TV or digit length: this checkout is
+out of date. `git pull`, then restart `microct-web`.
 
-```
-git clone https://github.com/snehakorlakunta/microctweb.git
-cd microctweb
-npm install
-npm run build
-```
-
-Then add this to the server's `.env` and restart it:
+To host a build you made yourself instead (for example while working on
+`microctweb`), point the server at it in `.env` and restart:
 
 ```ini
 MICROCT_WEB_DIR=C:\microct\microctweb\out
 ```
 
-`http://127.0.0.1:8000` now serves the new interface directly from your machine.
-Because the page and the server are the same address, none of the browser's
-cross-origin rules apply at all.
+Maintainers refresh the bundled copy from a clean `microctweb` checkout with
+`npm run bundle:server -- ../microct-tools`, then commit `src/microct_lab/site/`.
 
 ---
 
